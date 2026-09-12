@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { generateKeyPair, exportPKCS8 } from 'jose';
-import { createWorkerApp } from '../worker';
+import { createWorkerApp, sanitizeFilename } from '../worker';
 import { clearTokenCache } from '../services/googleServiceAccountAuth';
 
 async function runWorkerEndpointsTests() {
@@ -182,6 +182,135 @@ async function runWorkerEndpointsTests() {
         }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    // 5. Drive REST endpoint: File download (alt=media)
+    if (url.includes('/drive/v3/files/') && url.includes('alt=media')) {
+      if (url.includes('/drive/v3/files/doc-file-1?alt=media')) {
+        return new Response('Mock Binary Content of PAN_Card.pdf', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Length': '35'
+          }
+        });
+      }
+      if (url.includes('/drive/v3/files/doc-file-malicious-name?alt=media')) {
+        return new Response('Malicious Name File Content', {
+          status: 200,
+          headers: { 'Content-Type': 'application/pdf', 'Content-Length': '26' }
+        });
+      }
+      if (url.includes('/drive/v3/files/doc-file-unicode?alt=media')) {
+        return new Response('Unicode File Content', {
+          status: 200,
+          headers: { 'Content-Type': 'application/pdf', 'Content-Length': '20' }
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    }
+
+    // 6. Drive REST endpoint: File metadata (fields=...)
+    if (url.includes('/drive/v3/files/') && url.includes('fields=')) {
+      if (url.includes('/drive/v3/files/doc-file-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-file-1',
+            name: 'PAN_Card.pdf',
+            mimeType: 'application/pdf',
+            size: '102400',
+            parents: ['folder-active-123'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-file-other-user?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-file-other-user',
+            name: 'Other_User_Private.pdf',
+            mimeType: 'application/pdf',
+            size: '204800',
+            parents: ['folder-other-999'], // Belongs to someone else!
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-file-trashed?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-file-trashed',
+            name: 'Old_Trashed_Doc.pdf',
+            mimeType: 'application/pdf',
+            size: '5000',
+            parents: ['folder-active-123'],
+            trashed: true // Trashed!
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-file-folder?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-file-folder',
+            name: 'Subfolder',
+            mimeType: 'application/vnd.google-apps.folder',
+            parents: ['folder-active-123'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-file-shortcut?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-file-shortcut',
+            name: 'Shortcut',
+            mimeType: 'application/vnd.google-apps.shortcut',
+            parents: ['folder-active-123'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-file-malicious-name?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-file-malicious-name',
+            name: 'injected\r\nSet-Cookie: evil=1\r\n\r\nfilename.pdf',
+            mimeType: 'application/pdf',
+            size: '1024',
+            parents: ['folder-active-123'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-file-unicode?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-file-unicode',
+            name: 'चालान_2026.pdf',
+            mimeType: 'application/pdf',
+            size: '2048',
+            parents: ['folder-active-123'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-file-upstream-fail?')) {
+        return new Response('Google Drive Internal Error 500', {
+          status: 500,
+          headers: { 'Content-Type': 'text/plain' }
+        });
+      }
+      return new Response(JSON.stringify({ error: { code: 404, message: 'File not found' } }), {
+        status: 404,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     return new Response('Not found', { status: 404 });
@@ -386,6 +515,202 @@ async function runWorkerEndpointsTests() {
       assert.strictEqual(resNoFolder.status, 400);
 
       console.log('✓ Test 7 Passed: GET /api/documents returns safe documents list without exposing credentials or driveFolderId');
+    }
+
+    // TEST 8: GET /api/documents/:documentId/download (Protected & Zero-Trust)
+    {
+      // 8A. Successful authorized download
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-1/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.headers.get('Content-Type'), 'application/pdf');
+        assert.ok(res.headers.get('Content-Disposition')?.includes('filename="PAN_Card.pdf"'));
+        assert.ok(res.headers.get('Content-Disposition')?.includes("filename*=UTF-8''PAN_Card.pdf"));
+        assert.strictEqual(res.headers.get('X-Content-Type-Options'), 'nosniff');
+        assert.strictEqual(res.headers.get('Cache-Control'), 'private, no-cache, no-store, must-revalidate');
+        const text = await res.text();
+        assert.strictEqual(text, 'Mock Binary Content of PAN_Card.pdf');
+        console.log('✓ Test 8A Passed: Successful authorized document download with correct headers and stream');
+      }
+
+      // 8B. Unauthenticated download (401)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-1/download', {
+          method: 'GET'
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 401);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'UNAUTHORIZED');
+        console.log('✓ Test 8B Passed: Unauthenticated download rejected with 401');
+      }
+
+      // 8C. Invalid token download (401)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-1/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer invalid-token-xyz' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 401);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        console.log('✓ Test 8C Passed: Invalid token rejected with 401');
+      }
+
+      // 8D. Inactive user download (403)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-1/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-inactive-456' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 403);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'FORBIDDEN');
+        assert.ok(json.error.message.includes('inactive'));
+        console.log('✓ Test 8D Passed: Inactive user rejected with 403 Forbidden');
+      }
+
+      // 8E. IDOR / Cross-tenant protection (404)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-other-user/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 404, 'IDOR file attempt must return 404');
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'NOT_FOUND');
+        assert.strictEqual(json.error.message, 'Document not found or inaccessible.');
+        console.log('✓ Test 8E Passed: IDOR cross-tenant attempt rejected with 404 without leaking info');
+      }
+
+      // 8F. Trashed file attempt (404)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-trashed/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 404);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        console.log('✓ Test 8F Passed: Trashed document rejected with 404');
+      }
+
+      // 8G. Folder download attempt (404)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-folder/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 404);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        console.log('✓ Test 8G Passed: Folder download attempt rejected with 404');
+      }
+
+      // 8H. Shortcut download attempt (404)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-shortcut/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 404);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        console.log('✓ Test 8H Passed: Shortcut download attempt rejected with 404');
+      }
+
+      // 8I. Invalid / Path traversal document ID (400)
+      {
+        const req = new Request('http://localhost/api/documents/invalid..id!/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'BAD_REQUEST');
+        console.log('✓ Test 8I Passed: Malformed document ID rejected with 400 Bad Request');
+      }
+
+      // 8J. Filename security & header injection immunity
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-malicious-name/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const disp = res.headers.get('Content-Disposition') || '';
+        assert.ok(!disp.includes('\r'), 'Content-Disposition must NOT contain CR');
+        assert.ok(!disp.includes('\n'), 'Content-Disposition must NOT contain LF');
+        assert.strictEqual(res.headers.get('set-cookie'), null, 'Set-Cookie header must NOT be injected into response');
+
+        // Unit test sanitizeFilename directly across edge cases
+        const testCases = [
+          {
+            input: 'normal.pdf',
+            expectedAscii: 'normal.pdf'
+          },
+          {
+            input: 'evil\r\nX-Injected: 1\r\n\r\nfile.pdf',
+            expectedAscii: 'evilX-Injected: 1file.pdf'
+          },
+          {
+            input: '../../../../etc/passwd',
+            expectedAscii: 'passwd'
+          },
+          {
+            input: 'file"with"quotes.pdf',
+            expectedAscii: 'file_with_quotes.pdf'
+          },
+          {
+            input: 'हिंदी_दस्तावेज.pdf',
+            expectedAscii: '______________.pdf'
+          },
+          {
+            input: '',
+            expectedAscii: 'document.bin'
+          }
+        ];
+
+        for (const tc of testCases) {
+          const sanitized = sanitizeFilename(tc.input);
+          assert.strictEqual(sanitized.asciiFilename, tc.expectedAscii);
+          assert.ok(!sanitized.contentDisposition.includes('\r'));
+          assert.ok(!sanitized.contentDisposition.includes('\n'));
+        }
+
+        console.log('✓ Test 8J Passed: Filename sanitization strictly prevents CRLF injection and path traversal');
+      }
+
+      // 8K. Google Drive upstream failure (502)
+      {
+        const req = new Request('http://localhost/api/documents/doc-file-upstream-fail/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 502);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'BAD_GATEWAY');
+        assert.ok(!JSON.stringify(json).includes('private_key'));
+        console.log('✓ Test 8K Passed: Upstream failure returns 502 Bad Gateway without leaking secrets');
+      }
     }
 
     console.log('--- All Cloudflare Worker App Endpoints Tests Passed! ---\n');

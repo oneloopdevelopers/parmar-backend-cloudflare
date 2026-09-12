@@ -1,5 +1,5 @@
 import { getGoogleAccessToken, GOOGLE_DRIVE_SCOPE } from './googleServiceAccountAuth';
-import { DriveFolderSafeMetadata, DriveFileSafeMetadata } from '../types';
+import { DriveFolderSafeMetadata, DriveFileSafeMetadata, DriveFileDetails, DriveFileDownloadResult } from '../types';
 import { BadRequestError, NotFoundError, BadGatewayError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -179,6 +179,144 @@ export class GoogleDriveRestService {
       throw new BadGatewayError(`Unable to access Google Drive API: ${msg}`);
     }
   }
+
+  /**
+   * Retrieves file metadata for a specific fileId using the Google Drive v3 REST API.
+   * Requests id, name, mimeType, parents, size, and trashed fields.
+   */
+  public async getFileMetadata(
+    fileId: string,
+    options: DriveRestOptions
+  ): Promise<DriveFileDetails> {
+    if (!fileId || typeof fileId !== 'string' || !fileId.trim()) {
+      throw new BadRequestError('A valid Google Drive file ID is required.');
+    }
+
+    const cleanFileId = encodeURIComponent(fileId.trim());
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      scopes: GOOGLE_DRIVE_SCOPE,
+      customFetch: options.customFetch
+    });
+
+    const url = `https://www.googleapis.com/drive/v3/files/${cleanFileId}?fields=id,name,mimeType,parents,size,trashed&supportsAllDrives=true`;
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (response.status === 404) {
+        throw new NotFoundError(
+          'The requested document was not found or has not been shared with the backend service account.'
+        );
+      }
+
+      if (response.status === 403) {
+        throw new BadGatewayError(
+          'Permission denied when accessing Google Drive file. Ensure the backend service account has access.'
+        );
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error(`Drive REST files.get metadata failed with status ${response.status}:`, errorText);
+        throw new BadGatewayError(`Google Drive API error: HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        id?: string;
+        name?: string;
+        mimeType?: string;
+        parents?: string[];
+        size?: string | number;
+        trashed?: boolean;
+      };
+
+      return {
+        id: data.id || fileId.trim(),
+        name: data.name || '',
+        mimeType: data.mimeType || 'application/octet-stream',
+        parents: Array.isArray(data.parents) ? data.parents : [],
+        size: data.size !== undefined && data.size !== null ? String(data.size) : undefined,
+        trashed: Boolean(data.trashed)
+      };
+    } catch (err) {
+      if (err instanceof BadRequestError || err instanceof NotFoundError || err instanceof BadGatewayError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Error retrieving Google Drive file metadata via REST:', msg);
+      throw new BadGatewayError(`Unable to retrieve file metadata: ${msg}`);
+    }
+  }
+
+  /**
+   * Downloads a file as a stream from Google Drive v3 REST API using alt=media.
+   * Keeps credentials and access tokens strictly server-side.
+   */
+  public async downloadFileStream(
+    fileId: string,
+    options: DriveRestOptions
+  ): Promise<DriveFileDownloadResult> {
+    if (!fileId || typeof fileId !== 'string' || !fileId.trim()) {
+      throw new BadRequestError('A valid Google Drive file ID is required.');
+    }
+
+    const cleanFileId = encodeURIComponent(fileId.trim());
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      scopes: GOOGLE_DRIVE_SCOPE,
+      customFetch: options.customFetch
+    });
+
+    const url = `https://www.googleapis.com/drive/v3/files/${cleanFileId}?alt=media&supportsAllDrives=true`;
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`
+        }
+      });
+
+      if (response.status === 404) {
+        throw new NotFoundError(
+          'The requested document was not found or has not been shared with the backend service account.'
+        );
+      }
+
+      if (response.status === 403) {
+        throw new BadGatewayError(
+          'Permission denied when downloading from Google Drive. Ensure the backend service account has access.'
+        );
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error(`Drive REST files.get alt=media failed with status ${response.status}:`, errorText);
+        throw new BadGatewayError(`Google Drive download error: HTTP ${response.status}`);
+      }
+
+      return {
+        stream: response.body,
+        contentLength: response.headers.get('content-length') || undefined,
+        contentType: response.headers.get('content-type') || undefined
+      };
+    } catch (err) {
+      if (err instanceof BadRequestError || err instanceof NotFoundError || err instanceof BadGatewayError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Error downloading Google Drive file stream via REST:', msg);
+      throw new BadGatewayError(`Unable to download Google Drive document: ${msg}`);
+    }
+  }
 }
+
 
 export const googleDriveRestService = new GoogleDriveRestService();

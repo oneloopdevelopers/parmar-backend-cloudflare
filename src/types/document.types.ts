@@ -37,3 +37,18 @@ export interface DriveFolderTestResponse {
   };
   files: DriveFileSafeMetadata[];
 }
+
+export interface DriveFileDetails {
+  id: string;
+  name: string;
+  mimeType: string;
+  parents: string[];
+  size?: string;
+  trashed: boolean;
+}
+
+export interface DriveFileDownloadResult {
+  stream: ReadableStream<Uint8Array> | null;
+  contentLength?: string;
+  contentType?: string;
+}

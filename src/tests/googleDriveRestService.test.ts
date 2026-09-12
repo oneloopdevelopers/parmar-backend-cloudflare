@@ -149,6 +149,94 @@ async function runGoogleDriveRestServiceTests() {
     console.log('✓ Test 3 Passed: Successfully lists files with pagination across pages via Drive REST');
   }
 
+  // Test 4: getFileMetadata returns metadata including parents and trashed status
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files/file-meta-123')) {
+        return new Response(
+          JSON.stringify({
+            id: 'file-meta-123',
+            name: 'Tax_Return_2025.pdf',
+            mimeType: 'application/pdf',
+            parents: ['folder-user-1'],
+            size: '512000',
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const meta = await service.getFileMetadata('file-meta-123', {
+      serviceAccountJson: testServiceAccountJson,
+      customFetch: mockFetch
+    });
+
+    assert.strictEqual(meta.id, 'file-meta-123');
+    assert.strictEqual(meta.name, 'Tax_Return_2025.pdf');
+    assert.strictEqual(meta.mimeType, 'application/pdf');
+    assert.deepStrictEqual(meta.parents, ['folder-user-1']);
+    assert.strictEqual(meta.size, '512000');
+    assert.strictEqual(meta.trashed, false);
+    console.log('✓ Test 4 Passed: Successfully retrieves file metadata with parents and size');
+  }
+
+  // Test 5: downloadFileStream streams file content using alt=media
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files/file-stream-123?alt=media')) {
+        return new Response('Mock PDF Binary Data Stream', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Length': '28'
+          }
+        });
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const downloadRes = await service.downloadFileStream('file-stream-123', {
+      serviceAccountJson: testServiceAccountJson,
+      customFetch: mockFetch
+    });
+
+    assert.ok(downloadRes.stream, 'Stream should not be null');
+    assert.strictEqual(downloadRes.contentType, 'application/pdf');
+    assert.strictEqual(downloadRes.contentLength, '28');
+
+    // Read the stream to verify content
+    const reader = downloadRes.stream.getReader();
+    const { value, done } = await reader.read();
+    assert.strictEqual(done, false);
+    const text = new TextDecoder().decode(value);
+    assert.strictEqual(text, 'Mock PDF Binary Data Stream');
+    console.log('✓ Test 5 Passed: Successfully streams file content using alt=media');
+  }
+
   console.log('--- All Google Drive REST Service Tests Passed! ---\n');
 }
 

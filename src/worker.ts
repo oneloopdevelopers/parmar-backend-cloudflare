@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Env, ExecutionContext } from './types/worker.types';
-import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError } from './utils/errors';
+import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError, BadGatewayError } from './utils/errors';
 import { maskPanNumber } from './utils/clientProfileUtils';
 import { verifyFirebaseIdToken } from './services/firebaseTokenVerifier';
 import { firestoreRestService } from './services/firestoreRestService';
@@ -44,6 +44,61 @@ export function getServiceAccountJsonFromEnv(env?: Env): string {
     }
   }
   return '';
+}
+
+/**
+ * Sanitizes a filename for use in HTTP Content-Disposition headers.
+ * Strictly prevents CRLF, header injection, control characters, null bytes,
+ * path traversal, and quote escaping issues.
+ * Implements RFC 6266 / RFC 5987 with ASCII fallback and UTF-8 encoded parameter.
+ */
+export function sanitizeFilename(
+  rawName?: string | null,
+  fallback = 'document.bin'
+): { asciiFilename: string; encodedFilename: string; contentDisposition: string } {
+  const safeFallback = fallback && typeof fallback === 'string' && fallback.trim()
+    ? fallback.trim().replace(/[^a-zA-Z0-9._-]/g, '_')
+    : 'document.bin';
+
+  if (!rawName || typeof rawName !== 'string') {
+    return {
+      asciiFilename: safeFallback,
+      encodedFilename: encodeURIComponent(safeFallback),
+      contentDisposition: `attachment; filename="${safeFallback}"`
+    };
+  }
+
+  // 1. Strip path components (directory traversal)
+  let name = rawName.replace(/^.*[\\\/]/, '').trim();
+
+  // 2. Strip CRLF, control characters (0x00-0x1F, 0x7F) and null bytes
+  name = name.replace(/[\r\n\0\x00-\x1f\x7f]/g, '');
+
+  if (!name) {
+    return {
+      asciiFilename: safeFallback,
+      encodedFilename: encodeURIComponent(safeFallback),
+      contentDisposition: `attachment; filename="${safeFallback}"`
+    };
+  }
+
+  // 3. Prepare ASCII-safe filename for standard filename="..." parameter:
+  // Replace quotes, backslashes, semicolons, and non-printable/non-ASCII characters with underscores.
+  let ascii = name.replace(/["\\;]/g, '_').replace(/[^\x20-\x7E]/g, '_').trim();
+  if (!ascii) {
+    ascii = safeFallback;
+  }
+
+  // 4. Prepare RFC 5987 / RFC 6266 UTF-8 encoded filename for filename*=UTF-8''...
+  const encoded = encodeURIComponent(name)
+    .replace(/['()]/g, escape)
+    .replace(/\*/g, '%2A');
+
+  return {
+    asciiFilename: ascii,
+    encodedFilename: encoded,
+    contentDisposition: `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`
+  };
 }
 
 export interface WorkerAppOptions {
@@ -112,7 +167,16 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
-    const verified = await tokenVerifier(token, { projectId });
+    let verified;
+    try {
+      verified = await tokenVerifier(token, { projectId });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new UnauthorizedError(`Invalid or rejected Firebase ID token: ${msg}`);
+    }
 
     c.set('verifiedUid', verified.uid);
     c.set('verifiedEmail', verified.email);
@@ -145,6 +209,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         firebaseHealth: 'GET /api/health/firebase',
         profile: 'GET /api/profile (Protected - Requires Bearer <Firebase ID Token>)',
         documents: 'GET /api/documents (Protected - Requires Bearer <Firebase ID Token>)',
+        documentDownload: 'GET /api/documents/:documentId/download (Protected - Requires Bearer <Firebase ID Token>)',
         driveTest: 'GET /api/drive/test (Protected - Requires Bearer <Firebase ID Token>)'
       }
     };
@@ -371,6 +436,125 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       success: true,
       documents: files || []
     }, 200);
+  });
+
+  // ==========================================================
+  // ROUTE 6: GET /api/documents/:documentId/download (Protected)
+  // ==========================================================
+  app.get('/api/documents/:documentId/download', requireAuth, async (c) => {
+    const rawDocId = c.req.param('documentId');
+    if (!rawDocId || typeof rawDocId !== 'string' || !rawDocId.trim()) {
+      throw new BadRequestError('A valid Google Drive document ID is required.');
+    }
+
+    const documentId = rawDocId.trim();
+
+    // Prevent path traversal, directory separators, null bytes, and malformed characters.
+    // Google Drive file IDs typically consist of alphanumeric characters, hyphens, and underscores.
+    if (!/^[a-zA-Z0-9_-]{5,100}$/.test(documentId)) {
+      throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
+    }
+
+    // Identity MUST come exclusively from verified Firebase token
+    const uid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    logger.info(`Worker: Processing GET /api/documents/${documentId}/download for verified UID: ${uid}`);
+
+    // Load authoritative user profile from Firestore
+    const clientProfile = await firestoreRestService.getClientProfile(uid, {
+      projectId,
+      serviceAccountJson
+    });
+
+    // Enforce active status
+    if (clientProfile.status !== 'active') {
+      throw new ForbiddenError('User is inactive. Active status is required to download documents.');
+    }
+
+    // Authoritative driveFolderId read ONLY from Firestore
+    const driveFolderId = clientProfile.driveFolderId;
+    if (!driveFolderId || !driveFolderId.trim()) {
+      throw new BadRequestError('driveFolderId is missing from the authenticated user\'s Firestore profile.');
+    }
+
+    const authoritativeDriveFolderId = driveFolderId.trim();
+
+    // 1. Retrieve file metadata from Google Drive v3 REST API
+    let fileMetadata;
+    try {
+      fileMetadata = await googleDriveRestService.getFileMetadata(documentId, {
+        serviceAccountJson
+      });
+    } catch (err) {
+      if (err instanceof NotFoundError) {
+        throw new NotFoundError('Document not found or inaccessible.');
+      }
+      throw err;
+    }
+
+    // 2. Validate file.id matches requested documentId
+    if (fileMetadata.id !== documentId) {
+      throw new NotFoundError('Document not found or inaccessible.');
+    }
+
+    // 3. Reject trashed files
+    if (fileMetadata.trashed) {
+      logger.warn(`Download rejected: Document ${documentId} is trashed.`);
+      throw new NotFoundError('Document not found or inaccessible.');
+    }
+
+    // 4. File Type Security: Reject folders, shortcuts, and Google Workspace internal editor types
+    if (
+      fileMetadata.mimeType === 'application/vnd.google-apps.folder' ||
+      fileMetadata.mimeType === 'application/vnd.google-apps.shortcut' ||
+      fileMetadata.mimeType.startsWith('application/vnd.google-apps.')
+    ) {
+      logger.warn(`Download rejected: Unsupported mimeType '${fileMetadata.mimeType}' for document ${documentId}`);
+      throw new NotFoundError('Document not found or inaccessible.');
+    }
+
+    // 5. CRITICAL IDOR PROTECTION:
+    // Verify file.parents includes the user's authoritative driveFolderId
+    if (!fileMetadata.parents || !fileMetadata.parents.includes(authoritativeDriveFolderId)) {
+      logger.warn(`IDOR Prevention: UID ${uid} attempted to download file ${documentId} belonging to another folder.`);
+      // Return 404 to prevent cross-tenant enumeration
+      throw new NotFoundError('Document not found or inaccessible.');
+    }
+
+    // 6. Retrieve file content stream from Google Drive using alt=media
+    const downloadResult = await googleDriveRestService.downloadFileStream(documentId, {
+      serviceAccountJson
+    });
+
+    if (!downloadResult.stream) {
+      throw new BadGatewayError('Unable to retrieve file stream from Google Drive.');
+    }
+
+    // 7. Sanitize filename and prepare safe response headers
+    const { contentDisposition } = sanitizeFilename(fileMetadata.name, `document_${documentId}.bin`);
+
+    const headers = new Headers();
+    headers.set('Content-Type', fileMetadata.mimeType || 'application/octet-stream');
+    headers.set('Content-Disposition', contentDisposition);
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+
+    const contentLength = fileMetadata.size || downloadResult.contentLength;
+    if (contentLength && /^\d+$/.test(contentLength)) {
+      headers.set('Content-Length', contentLength);
+    }
+
+    // Return the response stream safely to the client
+    return new Response(downloadResult.stream, {
+      status: 200,
+      headers
+    });
   });
 
   // Global Error Handler
