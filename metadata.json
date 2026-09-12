@@ -1,0 +1,6 @@
+{
+  "name": "Backend API Service",
+  "description": "Node.js TypeScript Express backend API with Firebase Admin SDK token verification, Firestore repository, and secure architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

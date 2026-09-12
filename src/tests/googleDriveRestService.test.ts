@@ -1,0 +1,158 @@
+import assert from 'node:assert';
+import { GoogleDriveRestService } from '../services/googleDriveRestService';
+import { clearTokenCache } from '../services/googleServiceAccountAuth';
+import { generateKeyPair, exportPKCS8 } from 'jose';
+
+async function runGoogleDriveRestServiceTests() {
+  console.log('\n--- Starting Tests for Google Drive REST Service ---');
+
+  // Generate test credentials
+  const { privateKey } = await generateKeyPair('RS256', { extractable: true });
+  const privateKeyPem = await exportPKCS8(privateKey);
+  const testServiceAccountJson = JSON.stringify({
+    project_id: 'document-portal-d2b6d',
+    private_key: privateKeyPem,
+    client_email: 'test@document-portal-d2b6d.iam.gserviceaccount.com'
+  });
+
+  const service = new GoogleDriveRestService();
+
+  // Test 1: getDriveFolderMetadata with valid folder
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files/valid-folder-id')) {
+        return new Response(
+          JSON.stringify({
+            id: 'valid-folder-id',
+            name: 'Client Documents Folder',
+            mimeType: 'application/vnd.google-apps.folder',
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files/trashed-folder-id')) {
+        return new Response(
+          JSON.stringify({
+            id: 'trashed-folder-id',
+            name: 'Old Folder',
+            mimeType: 'application/vnd.google-apps.folder',
+            trashed: true
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const folderMeta = await service.getDriveFolderMetadata('valid-folder-id', {
+      serviceAccountJson: testServiceAccountJson,
+      customFetch: mockFetch
+    });
+
+    assert.strictEqual(folderMeta.id, 'valid-folder-id');
+    assert.strictEqual(folderMeta.name, 'Client Documents Folder');
+    assert.strictEqual(folderMeta.mimeType, 'application/vnd.google-apps.folder');
+    console.log('✓ Test 1 Passed: Successfully retrieves folder metadata via Drive REST');
+
+    // Trashed folder check
+    await assert.rejects(
+      async () => {
+        await service.getDriveFolderMetadata('trashed-folder-id', {
+          serviceAccountJson: testServiceAccountJson,
+          customFetch: mockFetch
+        });
+      },
+      (err: any) => {
+        assert.strictEqual(err.statusCode, 404);
+        assert.ok(err.message.includes('trash'));
+        return true;
+      }
+    );
+    console.log('✓ Test 2 Passed: Rejects trashed Google Drive folder with 404');
+  }
+
+  // Test 3: listFilesInFolder with pagination and safe metadata projection
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files?') && !url.includes('pageToken=page2')) {
+        return new Response(
+          JSON.stringify({
+            nextPageToken: 'page2',
+            files: [
+              {
+                id: 'file-1',
+                name: 'PAN_Card.pdf',
+                mimeType: 'application/pdf',
+                size: '204800',
+                createdTime: '2026-09-01T10:00:00Z',
+                modifiedTime: '2026-09-01T10:00:00Z'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('pageToken=page2')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'file-2',
+                name: 'Aadhaar.pdf',
+                mimeType: 'application/pdf',
+                size: '153600',
+                createdTime: '2026-09-02T11:00:00Z',
+                modifiedTime: '2026-09-02T11:00:00Z'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const files = await service.listFilesInFolder('folder-xyz', {
+      serviceAccountJson: testServiceAccountJson,
+      customFetch: mockFetch
+    });
+
+    assert.strictEqual(files.length, 2, 'Should combine pages 1 and 2');
+    assert.strictEqual(files[0].name, 'PAN_Card.pdf');
+    assert.strictEqual(files[1].name, 'Aadhaar.pdf');
+    assert.strictEqual(files[0].size, '204800');
+    console.log('✓ Test 3 Passed: Successfully lists files with pagination across pages via Drive REST');
+  }
+
+  console.log('--- All Google Drive REST Service Tests Passed! ---\n');
+}
+
+runGoogleDriveRestServiceTests().catch((err) => {
+  console.error('Google Drive REST Service Tests Failed:', err);
+  process.exit(1);
+});

@@ -1,0 +1,13 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "document-portal-backend",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "vars": {
+    "FIREBASE_PROJECT_ID": "document-portal-d2b6d",
+    "NODE_ENV": "production"
+  }
+}
