@@ -27,6 +27,8 @@ export interface DriveFileSafeMetadata {
   size: string;
   createdTime: string;
   modifiedTime: string;
+  uploaderType?: 'administrator' | 'client';
+  uploaderName?: string;
 }
 
 export interface DriveFolderTestResponse {
@@ -59,6 +61,8 @@ export interface DriveFileUploadResult {
   mimeType: string;
   size?: string;
   createdTime?: string;
+  uploaderType?: 'administrator' | 'client';
+  uploaderName?: string;
 }
 
 export interface UploadFileParams {

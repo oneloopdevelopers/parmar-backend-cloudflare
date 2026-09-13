@@ -48,7 +48,11 @@ const FORBIDDEN_CLIENT_IDENTITY_KEYS = [
   'destinationfolder',
   'destination_folder',
   'clientid',
-  'client_id'
+  'client_id',
+  'uploadertype',
+  'uploader_type',
+  'uploadername',
+  'uploader_name'
 ];
 
 /**
@@ -829,7 +833,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     logger.info(`Worker: Retrieved Drive folder '${folderMetadata.name}' and ${files.length} files for UID: ${uid}`);
 
-    // Return strictly and only the safe folder and files representation
+    // Return strictly and only the safe folder and files representation with authoritative attribution
     // Never return driveFolderId or service-account information
     return c.json({
       success: true,
@@ -837,7 +841,11 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         name: folderMetadata.name,
         mimeType: folderMetadata.mimeType
       },
-      files: files || []
+      files: (files || []).map((file) => ({
+        ...file,
+        uploaderType: 'administrator' as const,
+        uploaderName: 'Administrator'
+      }))
     }, 200);
   });
 
@@ -870,11 +878,12 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     const authoritativePanFolderId = driveFolderId.trim();
+    const authoritativeClientName = (clientProfile.name && clientProfile.name.trim()) ? clientProfile.name.trim() : 'Client';
 
     // Resolve Drive authorization options (prefers OAuth, falls back to service account)
     const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
 
-    // 1. List files directly inside authoritative PAN folder
+    // 1. List files directly inside authoritative PAN folder (Administrator documents)
     const panFiles = await googleDriveRestService.listFilesInFolder(authoritativePanFolderId, driveAuthOptions);
 
     // 2. Search for direct-child 'upload' subfolder
@@ -884,7 +893,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       false // Do NOT create folder during listing if missing
     );
 
-    // 3. If upload folder exists, list files inside upload folder
+    // 3. If upload folder exists, list files inside upload folder (Client documents)
     let uploadFiles: any[] = [];
     if (uploadFolderId) {
       try {
@@ -894,10 +903,13 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       }
     }
 
-    // 4. Merge results: Exclude folders, shortcuts, and inappropriate objects; deduplicate by file id
+    // 4. Merge results with authoritative uploader attribution
+    // Exclude folders, shortcuts, and inappropriate objects; deduplicate by file id
     const seenIds = new Set<string>();
     const mergedDocuments = [];
-    for (const file of [...panFiles, ...uploadFiles]) {
+
+    // First: Direct children of PAN root -> Administrator
+    for (const file of panFiles) {
       if (
         file &&
         file.id &&
@@ -908,7 +920,32 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       ) {
         if (!seenIds.has(file.id)) {
           seenIds.add(file.id);
-          mergedDocuments.push(file);
+          mergedDocuments.push({
+            ...file,
+            uploaderType: 'administrator' as const,
+            uploaderName: 'Administrator'
+          });
+        }
+      }
+    }
+
+    // Second: Direct children of PAN/upload subfolder -> Authenticated Client
+    for (const file of uploadFiles) {
+      if (
+        file &&
+        file.id &&
+        file.name &&
+        file.mimeType !== 'application/vnd.google-apps.folder' &&
+        file.mimeType !== 'application/vnd.google-apps.shortcut' &&
+        !file.mimeType.startsWith('application/vnd.google-apps.')
+      ) {
+        if (!seenIds.has(file.id)) {
+          seenIds.add(file.id);
+          mergedDocuments.push({
+            ...file,
+            uploaderType: 'client' as const,
+            uploaderName: authoritativeClientName
+          });
         }
       }
     }
@@ -1092,6 +1129,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     const authoritativeDriveFolderId = driveFolderId.trim();
+    const authoritativeClientName = (clientProfile.name && clientProfile.name.trim()) ? clientProfile.name.trim() : 'Client';
 
     // Resolve Drive authorization options (prefers OAuth, falls back to service account)
     const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
@@ -1167,7 +1205,9 @@ export function createWorkerApp(options?: WorkerAppOptions) {
           name: uploadedDocument.name,
           mimeType: uploadedDocument.mimeType,
           size: uploadedDocument.size || String(validatedFile.sizeBytes),
-          createdTime: uploadedDocument.createdTime || new Date().toISOString()
+          createdTime: uploadedDocument.createdTime || new Date().toISOString(),
+          uploaderType: 'client' as const,
+          uploaderName: authoritativeClientName
         }
       }
     }, 200);

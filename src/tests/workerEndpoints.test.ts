@@ -61,6 +61,13 @@ async function runWorkerEndpointsTests() {
         claims: { sub: 'user-new-client-789' }
       };
     }
+    if (token === 'token-pan-client-bwjpb') {
+      return {
+        uid: 'user-bwjpb-0442b',
+        email: 'jatin@example.com',
+        claims: { sub: 'user-bwjpb-0442b' }
+      };
+    }
     throw new Error('Invalid Firebase ID token signature');
   };
 
@@ -129,6 +136,24 @@ async function runWorkerEndpointsTests() {
             phone: { stringValue: '+91 99999 88888' },
             panNumber: { stringValue: 'NEWCL1234F' },
             driveFolderId: { stringValue: 'folder-new-client-789' },
+            role: { stringValue: 'client' },
+            status: { stringValue: 'active' }
+          }
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (url.includes('/databases/(default)/documents/users/user-bwjpb-0442b')) {
+      return new Response(
+        JSON.stringify({
+          name: `projects/${projectId}/databases/(default)/documents/users/user-bwjpb-0442b`,
+          fields: {
+            name: { stringValue: 'Jatin Bhuchhda' },
+            email: { stringValue: 'jatin@example.com' },
+            phone: { stringValue: '+91 91234 56789' },
+            panNumber: { stringValue: 'BWJPB0442B' },
+            driveFolderId: { stringValue: 'folder-bwjpb0442b-pan-root' },
             role: { stringValue: 'client' },
             status: { stringValue: 'active' }
           }
@@ -213,6 +238,18 @@ async function runWorkerEndpointsTests() {
       );
     }
 
+    if (url.includes('/drive/v3/files/folder-bwjpb0442b-pan-root?') && url.includes('fields=id,name,mimeType,trashed')) {
+      return new Response(
+        JSON.stringify({
+          id: 'folder-bwjpb0442b-pan-root',
+          name: 'BWJPB0442B',
+          mimeType: 'application/vnd.google-apps.folder',
+          trashed: false
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     // 3B. Drive REST endpoint: Folder creation (POST /drive/v3/files)
     if (init?.method === 'POST' && url.includes('/drive/v3/files') && !url.includes('uploadType=multipart')) {
       const body = JSON.parse(init.body as string);
@@ -246,6 +283,22 @@ async function runWorkerEndpointsTests() {
           { status: 200, headers: { 'Content-Type': 'application/json' } }
         );
       }
+      if (url.includes('folder-bwjpb0442b-pan-root')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'upload-folder-bwjpb-0442b',
+                name: 'upload',
+                mimeType: 'application/vnd.google-apps.folder',
+                trashed: false,
+                parents: ['folder-bwjpb0442b-pan-root']
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
       return new Response(
         JSON.stringify({ files: [] }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -265,6 +318,42 @@ async function runWorkerEndpointsTests() {
                 size: '20480',
                 createdTime: '2026-09-03T12:00:00Z',
                 modifiedTime: '2026-09-03T12:00:00Z'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('upload-folder-bwjpb-0442b')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'doc-sample-0',
+                name: 'pdf-sample_0.pdf',
+                mimeType: 'application/pdf',
+                size: '13312',
+                createdTime: '2026-09-13T10:00:00Z',
+                modifiedTime: '2026-09-13T10:00:00Z'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('folder-bwjpb0442b-pan-root')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'doc-udyam-1',
+                name: 'UDYAM-ONELOOP.pdf',
+                mimeType: 'application/pdf',
+                size: '197000',
+                createdTime: '2026-09-01T10:00:00Z',
+                modifiedTime: '2026-09-01T10:00:00Z'
               }
             ]
           }),
@@ -708,9 +797,22 @@ async function runWorkerEndpointsTests() {
       const json: any = await res.json();
       assert.strictEqual(json.success, true);
       assert.strictEqual(json.documents.length, 3);
-      assert.ok(json.documents.some((d: any) => d.name === 'PAN_Card.pdf'));
-      assert.ok(json.documents.some((d: any) => d.name === 'Bank_Statement.pdf'));
-      assert.ok(json.documents.some((d: any) => d.name === 'Client_Self_Uploaded.pdf'));
+      
+      const panCardDoc = json.documents.find((d: any) => d.name === 'PAN_Card.pdf');
+      assert.ok(panCardDoc);
+      assert.strictEqual(panCardDoc.uploaderType, 'administrator');
+      assert.strictEqual(panCardDoc.uploaderName, 'Administrator');
+
+      const bankStatementDoc = json.documents.find((d: any) => d.name === 'Bank_Statement.pdf');
+      assert.ok(bankStatementDoc);
+      assert.strictEqual(bankStatementDoc.uploaderType, 'administrator');
+      assert.strictEqual(bankStatementDoc.uploaderName, 'Administrator');
+
+      const clientSelfDoc = json.documents.find((d: any) => d.name === 'Client_Self_Uploaded.pdf');
+      assert.ok(clientSelfDoc);
+      assert.strictEqual(clientSelfDoc.uploaderType, 'client');
+      assert.strictEqual(clientSelfDoc.uploaderName, 'Rajesh Sharma');
+
       assert.strictEqual(json.driveFolderId, undefined, 'driveFolderId must NEVER be returned');
       assert.strictEqual(json.uid, undefined, 'UID must NEVER be returned');
 
@@ -954,6 +1056,8 @@ async function runWorkerEndpointsTests() {
         assert.strictEqual(json.data.document.id, 'uploaded-doc-id-789');
         assert.strictEqual(json.data.document.name, 'Income_Tax_Computation.pdf');
         assert.strictEqual(json.data.document.mimeType, 'application/pdf');
+        assert.strictEqual(json.data.document.uploaderType, 'client');
+        assert.strictEqual(json.data.document.uploaderName, 'Rajesh Sharma');
         // Verify no sensitive fields in response
         assert.strictEqual(json.data.document.driveFolderId, undefined);
         assert.strictEqual(json.data.driveFolderId, undefined);
@@ -1328,6 +1432,79 @@ async function runWorkerEndpointsTests() {
         console.log('✓ Test 9T Passed: Client supplied driveFolderId in multipart form data rejected with 400');
       }
 
+      // 9T2. Client supplies uploaderType in multipart form data -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        fd.append('uploaderType', 'administrator');
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9T2 Passed: Client supplied uploaderType in multipart form data rejected with 400');
+      }
+
+      // 9T3. Client supplies uploaderName in multipart form data -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        fd.append('uploader_name', 'Hacked Admin');
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9T3 Passed: Client supplied uploader_name in multipart form data rejected with 400');
+      }
+
+      // 9T4. Client supplies uploaderType in header -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer token-active-123',
+            'X-Uploader-Type': 'administrator'
+          },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9T4 Passed: Client supplied X-Uploader-Type in header rejected with 400');
+      }
+
+      // 9T5. Client supplies uploaderName in query -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload?uploaderName=SuperAdmin', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9T5 Passed: Client supplied uploaderName in query rejected with 400');
+      }
+
       // 9U. Google Drive upstream failure -> 502
       {
         const fd = new FormData();
@@ -1686,6 +1863,55 @@ async function runWorkerEndpointsTests() {
         assert.strictEqual(json.success, false);
         console.log('✓ Test 10G Passed: Attempt to download file in another client\'s upload folder strictly rejected with 404');
       }
+    }
+
+    // ==========================================================
+    // TEST 11: Production Verification Case: Client PAN BWJPB0442B Uploader Attribution
+    // ==========================================================
+    {
+      const validPdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xc4, 0xe5, 0xf2, 0xe5]);
+
+      // 11A. GET /api/documents for client PAN BWJPB0442B
+      // UDYAM-ONELOOP.pdf is directly inside Client Documents/BWJPB0442B/ -> Uploaded by: Administrator
+      // pdf-sample_0.pdf is inside Client Documents/BWJPB0442B/upload/ -> Uploaded by: Jatin Bhuchhda
+      const req = new Request('http://localhost/api/documents', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-pan-client-bwjpb' }
+      });
+      const res = await app.request(req, {}, workerEnv);
+      assert.strictEqual(res.status, 200);
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.documents.length, 2);
+
+      const adminDoc = json.documents.find((d: any) => d.name === 'UDYAM-ONELOOP.pdf');
+      assert.ok(adminDoc, 'UDYAM-ONELOOP.pdf must be present in documents list');
+      assert.strictEqual(adminDoc.uploaderType, 'administrator');
+      assert.strictEqual(adminDoc.uploaderName, 'Administrator');
+
+      const clientDoc = json.documents.find((d: any) => d.name === 'pdf-sample_0.pdf');
+      assert.ok(clientDoc, 'pdf-sample_0.pdf must be present in documents list');
+      assert.strictEqual(clientDoc.uploaderType, 'client');
+      assert.strictEqual(clientDoc.uploaderName, 'Jatin Bhuchhda');
+
+      console.log('✓ Test 11A Passed: GET /api/documents correctly attributes Administrator vs Client documents for PAN BWJPB0442B');
+
+      // 11B. POST /api/documents/upload for client PAN BWJPB0442B
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'Client_ITR_V.pdf', { type: 'application/pdf' }));
+      const reqUpload = new Request('http://localhost/api/documents/upload', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer token-pan-client-bwjpb' },
+        body: fd
+      });
+      const resUpload = await app.request(reqUpload, {}, workerEnv);
+      assert.strictEqual(resUpload.status, 200);
+      const jsonUpload: any = await resUpload.json();
+      assert.strictEqual(jsonUpload.success, true);
+      assert.strictEqual(jsonUpload.data.document.uploaderType, 'client');
+      assert.strictEqual(jsonUpload.data.document.uploaderName, 'Jatin Bhuchhda');
+
+      console.log('✓ Test 11B Passed: POST /api/documents/upload returns uploaderType "client" and uploaderName "Jatin Bhuchhda"');
     }
 
     console.log('--- All Cloudflare Worker App Endpoints Tests Passed! ---\n');
