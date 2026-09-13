@@ -21,11 +21,23 @@ const tokenCache = new Map<string, CachedToken>();
 const keyCache = new Map<string, CryptoKey | Uint8Array>();
 
 export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
-export const GOOGLE_DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+export const GOOGLE_DRIVE_READ_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
+export const GOOGLE_DRIVE_WRITE_SCOPE = 'https://www.googleapis.com/auth/drive';
+export const GOOGLE_DRIVE_SCOPE = GOOGLE_DRIVE_READ_SCOPE;
 export const DEFAULT_SCOPES = [
   'https://www.googleapis.com/auth/datastore',
   'https://www.googleapis.com/auth/drive'
 ].join(' ');
+
+/**
+ * Normalizes a space-delimited OAuth scopes string into a sorted, unique string.
+ */
+export function normalizeScopes(scopes: string): string {
+  if (!scopes || typeof scopes !== 'string') {
+    return '';
+  }
+  return scopes.trim().split(/\s+/).filter(Boolean).sort().join(' ');
+}
 
 /**
  * Parses and validates the service account JSON string.
@@ -133,7 +145,9 @@ export async function getGoogleAccessToken(
   options?: { forceRefresh?: boolean; scopes?: string; customFetch?: typeof fetch }
 ): Promise<{ accessToken: string; projectId: string }> {
   const creds = parseServiceAccountJson(rawServiceAccountJson);
-  const cacheKey = creds.client_email;
+  const requestedScopes = options?.scopes || DEFAULT_SCOPES;
+  const normalized = normalizeScopes(requestedScopes);
+  const cacheKey = `${creds.client_email}:::${normalized}`;
 
   // Check cache (expire with 5-minute margin of safety)
   if (!options?.forceRefresh) {
@@ -146,7 +160,7 @@ export async function getGoogleAccessToken(
     }
   }
 
-  const assertion = await createServiceAccountAssertion(creds, options?.scopes || DEFAULT_SCOPES);
+  const assertion = await createServiceAccountAssertion(creds, requestedScopes);
 
   const bodyParams = new URLSearchParams({
     grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',

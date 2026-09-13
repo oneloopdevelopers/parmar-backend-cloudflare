@@ -1,4 +1,9 @@
-import { getGoogleAccessToken, GOOGLE_DRIVE_SCOPE } from './googleServiceAccountAuth';
+import {
+  getGoogleAccessToken,
+  GOOGLE_DRIVE_READ_SCOPE,
+  GOOGLE_DRIVE_WRITE_SCOPE,
+  GOOGLE_DRIVE_SCOPE
+} from './googleServiceAccountAuth';
 import {
   DriveFolderSafeMetadata,
   DriveFileSafeMetadata,
@@ -348,7 +353,7 @@ export class GoogleDriveRestService {
 
     const fetchImpl = options.customFetch || fetch;
     const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_SCOPE,
+      scopes: GOOGLE_DRIVE_WRITE_SCOPE,
       customFetch: options.customFetch
     });
 
@@ -369,13 +374,13 @@ export class GoogleDriveRestService {
       `Content-Type: ${params.mimeType.trim()}\r\n\r\n`
     );
 
-    const footerChunk = encoder.encode(`\r\n--${boundary}--\r\n`);
+    const footerChunk = encoder.encode(`\r\n--${boundary}--`);
 
-    const totalLength = headerChunk.length + params.content.length + footerChunk.length;
+    const totalLength = headerChunk.byteLength + params.content.byteLength + footerChunk.byteLength;
     const bodyBuffer = new Uint8Array(totalLength);
     bodyBuffer.set(headerChunk, 0);
-    bodyBuffer.set(params.content, headerChunk.length);
-    bodyBuffer.set(footerChunk, headerChunk.length + params.content.length);
+    bodyBuffer.set(params.content, headerChunk.byteLength);
+    bodyBuffer.set(footerChunk, headerChunk.byteLength + params.content.byteLength);
 
     try {
       const response = await fetchImpl(url, {
@@ -383,26 +388,36 @@ export class GoogleDriveRestService {
         headers: {
           'Authorization': `Bearer ${accessToken}`,
           'Content-Type': `multipart/related; boundary=${boundary}`,
+          'Content-Length': String(bodyBuffer.byteLength),
           'Accept': 'application/json'
         },
         body: bodyBuffer
       });
 
-      if (response.status === 404) {
-        throw new NotFoundError(
-          'The target Google Drive folder was not found or has not been shared with the backend service account.'
-        );
-      }
-
-      if (response.status === 403) {
-        throw new BadGatewayError(
-          'Permission denied when uploading to Google Drive folder. Ensure the service account has editor access.'
-        );
-      }
-
       if (!response.ok) {
         const errorText = await response.text();
-        logger.error(`Drive REST files.create uploadType=multipart failed with status ${response.status}:`, errorText);
+        const safeErrorBody = errorText ? errorText.substring(0, 1000).replace(/[\r\n]+/g, ' ') : '<empty>';
+        logger.error(
+          `Google Drive upload rejected: status=${response.status}, ` +
+          `endpoint=https://www.googleapis.com/upload/drive/v3/files, ` +
+          `mimeType=${params.mimeType.trim()}, ` +
+          `bodyByteLength=${bodyBuffer.byteLength}, ` +
+          `contentLength=${String(bodyBuffer.byteLength)}, ` +
+          `upstreamError=${safeErrorBody}`
+        );
+
+        if (response.status === 404) {
+          throw new NotFoundError(
+            'The target Google Drive folder was not found or has not been shared with the backend service account.'
+          );
+        }
+
+        if (response.status === 403) {
+          throw new BadGatewayError(
+            'Permission denied when uploading to Google Drive folder. Ensure the service account has editor access.'
+          );
+        }
+
         throw new BadGatewayError(`Google Drive upload error: HTTP ${response.status}`);
       }
 
@@ -469,7 +484,7 @@ export class GoogleDriveRestService {
 
     const fetchImpl = options.customFetch || fetch;
     const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_SCOPE,
+      scopes: GOOGLE_DRIVE_WRITE_SCOPE,
       customFetch: options.customFetch
     });
 

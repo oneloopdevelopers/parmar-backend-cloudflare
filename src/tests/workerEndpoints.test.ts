@@ -1,7 +1,7 @@
 import assert from 'node:assert';
-import { generateKeyPair, exportPKCS8 } from 'jose';
+import { generateKeyPair, exportPKCS8, decodeJwt } from 'jose';
 import { createWorkerApp, sanitizeFilename } from '../worker';
-import { clearTokenCache } from '../services/googleServiceAccountAuth';
+import { clearTokenCache, GOOGLE_DRIVE_WRITE_SCOPE } from '../services/googleServiceAccountAuth';
 
 async function runWorkerEndpointsTests() {
   console.log('\n--- Starting Tests for Cloudflare Worker App Endpoints ---');
@@ -67,6 +67,9 @@ async function runWorkerEndpointsTests() {
   // Test observation state
   let lastUploadedParents: string[] = [];
   let lastCreatedFolder: any = null;
+  let lastUploadHeaders: Record<string, string> = {};
+  let lastUploadBodyBytes: Uint8Array | null = null;
+  let lastTokenAssertionScopes: string[] = [];
 
   // Setup mock global fetch for Google OAuth, Firestore REST, and Drive REST
   const originalFetch = globalThis.fetch;
@@ -75,6 +78,18 @@ async function runWorkerEndpointsTests() {
 
     // 1. Google OAuth token endpoint
     if (url.includes('oauth2.googleapis.com/token')) {
+      const bodyStr = String(init?.body || '');
+      const params = new URLSearchParams(bodyStr);
+      const assertion = params.get('assertion');
+      if (assertion) {
+        try {
+          const decoded: any = decodeJwt(assertion);
+          if (decoded.scope) {
+            lastTokenAssertionScopes.push(decoded.scope);
+          }
+        } catch (_) {}
+      }
+
       return new Response(
         JSON.stringify({
           access_token: 'mock-google-access-token',
@@ -455,13 +470,27 @@ async function runWorkerEndpointsTests() {
 
     // 7. Drive REST endpoint: File upload (uploadType=multipart)
     if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+      lastUploadHeaders = (init?.headers as Record<string, string>) || {};
       let bodyText = '';
       if (init?.body instanceof Uint8Array) {
+        lastUploadBodyBytes = init.body;
         bodyText = new TextDecoder().decode(init.body);
       }
       if (bodyText.includes('upstream-fail.pdf')) {
         return new Response('Google Drive Upload Internal Error 500', {
           status: 500,
+          headers: { 'Content-Type': 'text/plain' }
+        });
+      }
+      if (bodyText.includes('upstream-411.pdf')) {
+        return new Response('Google Drive Upload 411 Length Required', {
+          status: 411,
+          headers: { 'Content-Type': 'text/plain' }
+        });
+      }
+      if (bodyText.includes('upstream-400.pdf')) {
+        return new Response('Google Drive Upload 400 Bad Request', {
+          status: 400,
           headers: { 'Content-Type': 'text/plain' }
         });
       }
@@ -1272,6 +1301,40 @@ async function runWorkerEndpointsTests() {
         console.log('✓ Test 9U Passed: Google Drive upstream failure returns 502 Bad Gateway');
       }
 
+      // 9U_411. Google Drive 411 Length Required failure -> 502 Bad Gateway
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'upstream-411.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 502);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'BAD_GATEWAY');
+        console.log('✓ Test 9U_411 Passed: Google Drive 411 Length Required returns safe 502 Bad Gateway');
+      }
+
+      // 9U_400. Google Drive 400 Bad Request failure -> 502 Bad Gateway
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'upstream-400.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 502);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'BAD_GATEWAY');
+        console.log('✓ Test 9U_400 Passed: Google Drive 400 Bad Request returns safe 502 Bad Gateway');
+      }
+
       // 9V. Filename path traversal attempt is sanitized
       {
         const fd = new FormData();
@@ -1323,7 +1386,24 @@ async function runWorkerEndpointsTests() {
         assert.strictEqual(json.success, true);
         assert.strictEqual(json.data.document.name, 'PAN_Card.pdf');
         assert.ok(json.data.document.id);
-        console.log('✓ Test 9X Passed: Upload with existing filename succeeds without overwriting existing files');
+
+        // Verify wire-level upload contract to Google Drive
+        assert.ok(lastUploadBodyBytes instanceof Uint8Array, 'Body sent to fetch must be a Uint8Array');
+        assert.strictEqual(
+          lastUploadHeaders['Content-Length'],
+          String(lastUploadBodyBytes.byteLength),
+          'Content-Length header must be explicitly set and match byteLength'
+        );
+        assert.ok(
+          lastUploadHeaders['Content-Type']?.startsWith('multipart/related; boundary='),
+          'Content-Type must be multipart/related with boundary'
+        );
+        assert.ok(
+          lastTokenAssertionScopes.includes(GOOGLE_DRIVE_WRITE_SCOPE),
+          'Drive write scope must be requested for uploading files'
+        );
+
+        console.log('✓ Test 9X Passed: Upload succeeds with exact wire-level multipart contract, write scope, and Content-Length');
       }
 
       // 9Y. Successful response does not contain driveFolderId

@@ -1,7 +1,7 @@
 import assert from 'node:assert';
 import { GoogleDriveRestService } from '../services/googleDriveRestService';
-import { clearTokenCache } from '../services/googleServiceAccountAuth';
-import { generateKeyPair, exportPKCS8 } from 'jose';
+import { clearTokenCache, GOOGLE_DRIVE_WRITE_SCOPE } from '../services/googleServiceAccountAuth';
+import { generateKeyPair, exportPKCS8, decodeJwt } from 'jose';
 
 async function runGoogleDriveRestServiceTests() {
   console.log('\n--- Starting Tests for Google Drive REST Service ---');
@@ -237,16 +237,21 @@ async function runGoogleDriveRestServiceTests() {
     console.log('✓ Test 5 Passed: Successfully streams file content using alt=media');
   }
 
-  // Test 6: uploadFileMultipart successful upload
+  // Test 6: uploadFileMultipart successful upload with exact wire-level multipart validation
   {
     clearTokenCache();
 
-    let capturedRequestBody = '';
+    let capturedRequestBodyBytes: Uint8Array | null = null;
     let capturedHeaders: Record<string, string> = {};
+    let capturedTokenAssertion: string = '';
 
     const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.includes('oauth2.googleapis.com/token')) {
+        const bodyStr = String(init?.body || '');
+        const params = new URLSearchParams(bodyStr);
+        capturedTokenAssertion = params.get('assertion') || '';
+
         return new Response(
           JSON.stringify({ access_token: 'mock-upload-token', expires_in: 3600 }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -256,7 +261,7 @@ async function runGoogleDriveRestServiceTests() {
       if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
         capturedHeaders = (init?.headers as Record<string, string>) || {};
         if (init?.body instanceof Uint8Array) {
-          capturedRequestBody = new TextDecoder().decode(init.body);
+          capturedRequestBodyBytes = init.body;
         }
 
         return new Response(
@@ -295,14 +300,65 @@ async function runGoogleDriveRestServiceTests() {
     assert.strictEqual(uploadRes.size, '1024');
     assert.ok(uploadRes.createdTime);
 
-    // Verify multipart request body contained metadata with authoritative parents
-    assert.ok(capturedRequestBody.includes('"parents":["authoritative-folder-456"]'));
-    assert.ok(capturedRequestBody.includes('"name":"Form_16.pdf"'));
-    assert.ok(capturedRequestBody.includes('Content-Type: application/pdf'));
-    assert.ok(capturedHeaders['Content-Type'].includes('multipart/related; boundary='));
-    assert.strictEqual(capturedHeaders['Authorization'], 'Bearer mock-upload-token');
+    // 1. Verify OAuth token requested write-capable scope (https://www.googleapis.com/auth/drive)
+    assert.ok(capturedTokenAssertion, 'Should have made OAuth token assertion');
+    const decodedAssertion: any = decodeJwt(capturedTokenAssertion);
+    assert.strictEqual(
+      decodedAssertion.scope,
+      GOOGLE_DRIVE_WRITE_SCOPE,
+      'Upload token MUST request write-capable drive scope, not drive.readonly'
+    );
 
-    console.log('✓ Test 6 Passed: Successfully uploads file using multipart REST API with authoritative parent');
+    // 2. Verify wire-level body and headers
+    assert.ok(capturedRequestBodyBytes, 'Body sent to fetch must be a Uint8Array');
+    assert.ok(capturedRequestBodyBytes instanceof Uint8Array, 'Body must be Uint8Array');
+
+    // 3. Verify Content-Length header matches byteLength exactly
+    assert.ok(capturedHeaders['Content-Length'], 'Content-Length header must be set');
+    assert.strictEqual(
+      capturedHeaders['Content-Length'],
+      String(capturedRequestBodyBytes.byteLength),
+      'Content-Length must exactly match body.byteLength'
+    );
+
+    // 4. Verify Content-Type contains multipart/related and boundary
+    const contentType = capturedHeaders['Content-Type'] || '';
+    assert.ok(contentType.startsWith('multipart/related; boundary='));
+    const boundaryMatch = contentType.match(/boundary=([a-zA-Z0-9_-]+)/);
+    assert.ok(boundaryMatch, 'Boundary must be present in Content-Type');
+    const boundary = boundaryMatch[1];
+
+    // 5. Decode text to inspect RFC 2387 multipart structure
+    const bodyText = new TextDecoder().decode(capturedRequestBodyBytes);
+
+    // Structure checks:
+    // First part: opening boundary
+    assert.ok(bodyText.startsWith(`--${boundary}\r\n`));
+    // Metadata headers and blank line
+    assert.ok(bodyText.includes(`Content-Type: application/json; charset=UTF-8\r\n\r\n`));
+    // Metadata JSON
+    assert.ok(bodyText.includes(`{"name":"Form_16.pdf","parents":["authoritative-folder-456"]}\r\n`));
+    // Intermediate boundary before media
+    assert.ok(bodyText.includes(`\r\n--${boundary}\r\n`));
+    // Media header
+    assert.ok(bodyText.includes(`Content-Type: application/pdf\r\n\r\n`));
+    // Terminating boundary
+    assert.ok(bodyText.endsWith(`\r\n--${boundary}--`));
+
+    // 6. Verify binary PDF content intact in the byte buffer
+    const pdfSliceIndex = bodyText.indexOf('Content-Type: application/pdf\r\n\r\n') + 'Content-Type: application/pdf\r\n\r\n'.length;
+    // Check that dummyPdfContent bytes exist right after media headers
+    const binaryMarker = [0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34];
+    let foundBinary = false;
+    for (let i = 0; i <= capturedRequestBodyBytes.length - binaryMarker.length; i++) {
+      if (binaryMarker.every((b, idx) => capturedRequestBodyBytes![i + idx] === b)) {
+        foundBinary = true;
+        break;
+      }
+    }
+    assert.ok(foundBinary, 'Binary bytes of the file must be preserved intact');
+
+    console.log('✓ Test 6 Passed: Successfully uploads file with exact wire-level multipart format, write scope, and Content-Length');
   }
 
   // Test 7: uploadFileMultipart upstream failure handling (502 Bad Gateway)
@@ -575,6 +631,99 @@ async function runGoogleDriveRestServiceTests() {
       }
     );
     console.log('✓ Test 12 Passed: Validates inputs and handles upstream Drive failures safely');
+  }
+
+  // Test 13: uploadFileMultipart handles 411 Length Required from upstream with safe 502
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+        return new Response('411 Length Required: Content-Length missing or chunked', {
+          status: 411,
+          headers: { 'Content-Type': 'text/plain' }
+        });
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    await assert.rejects(
+      async () => {
+        await service.uploadFileMultipart(
+          {
+            name: 'test.pdf',
+            mimeType: 'application/pdf',
+            parents: ['folder-abc'],
+            content: new Uint8Array([1, 2, 3])
+          },
+          {
+            serviceAccountJson: testServiceAccountJson,
+            customFetch: mockFetch
+          }
+        );
+      },
+      (err: any) => {
+        assert.strictEqual(err.statusCode, 502);
+        assert.ok(!err.message.includes('testServiceAccountJson'));
+        return true;
+      }
+    );
+    console.log('✓ Test 13 Passed: Upstream 411 Length Required returns safe 502 Bad Gateway');
+  }
+
+  // Test 14: uploadFileMultipart handles 400 Bad Request from upstream with safe 502
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+        return new Response('400 Bad Request: Invalid multipart body formatting', {
+          status: 400,
+          headers: { 'Content-Type': 'text/plain' }
+        });
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    await assert.rejects(
+      async () => {
+        await service.uploadFileMultipart(
+          {
+            name: 'test.pdf',
+            mimeType: 'application/pdf',
+            parents: ['folder-abc'],
+            content: new Uint8Array([1, 2, 3])
+          },
+          {
+            serviceAccountJson: testServiceAccountJson,
+            customFetch: mockFetch
+          }
+        );
+      },
+      (err: any) => {
+        assert.strictEqual(err.statusCode, 502);
+        return true;
+      }
+    );
+    console.log('✓ Test 14 Passed: Upstream 400 Bad Request returns safe 502 Bad Gateway');
   }
 
   console.log('--- All Google Drive REST Service Tests Passed! ---\n');
