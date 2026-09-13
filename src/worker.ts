@@ -26,6 +26,10 @@ const FORBIDDEN_CLIENT_IDENTITY_KEYS = [
   'drive_folder_id',
   'folderid',
   'folder_id',
+  'destinationfolderid',
+  'destination_folder_id',
+  'destinationfolder',
+  'destination_folder',
   'clientid',
   'client_id'
 ];
@@ -424,18 +428,56 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new BadRequestError('driveFolderId is missing from the authenticated user\'s Firestore profile.');
     }
 
-    const cleanFolderId = driveFolderId.trim();
+    const authoritativePanFolderId = driveFolderId.trim();
 
-    // Query Google Drive via REST
-    const files = await googleDriveRestService.listFilesInFolder(cleanFolderId, {
+    // 1. List files directly inside authoritative PAN folder
+    const panFiles = await googleDriveRestService.listFilesInFolder(authoritativePanFolderId, {
       serviceAccountJson
     });
 
-    logger.info(`Worker: Retrieved ${files.length} document(s) for UID: ${uid}`);
+    // 2. Search for direct-child 'upload' subfolder
+    const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
+      authoritativePanFolderId,
+      { serviceAccountJson },
+      false // Do NOT create folder during listing if missing
+    );
+
+    // 3. If upload folder exists, list files inside upload folder
+    let uploadFiles: any[] = [];
+    if (uploadFolderId) {
+      try {
+        uploadFiles = await googleDriveRestService.listFilesInFolder(uploadFolderId, {
+          serviceAccountJson
+        });
+      } catch (err) {
+        logger.warn(`Failed to list upload folder for UID ${uid}, continuing with PAN files:`, err);
+      }
+    }
+
+    // 4. Merge results: Exclude folders, shortcuts, and inappropriate objects; deduplicate by file id
+    const seenIds = new Set<string>();
+    const mergedDocuments = [];
+    for (const file of [...panFiles, ...uploadFiles]) {
+      if (
+        file &&
+        file.id &&
+        file.name &&
+        file.mimeType !== 'application/vnd.google-apps.folder' &&
+        file.mimeType !== 'application/vnd.google-apps.shortcut' &&
+        !file.mimeType.startsWith('application/vnd.google-apps.')
+      ) {
+        if (!seenIds.has(file.id)) {
+          seenIds.add(file.id);
+          mergedDocuments.push(file);
+        }
+      }
+    }
+
+    logger.info(`Worker: Retrieved ${mergedDocuments.length} document(s) (PAN + upload) for UID: ${uid}`);
 
     return c.json({
       success: true,
-      documents: files || []
+      documents: mergedDocuments
     }, 200);
   });
 
@@ -521,9 +563,26 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     // 5. CRITICAL IDOR PROTECTION:
-    // Verify file.parents includes the user's authoritative driveFolderId
-    if (!fileMetadata.parents || !fileMetadata.parents.includes(authoritativeDriveFolderId)) {
-      logger.warn(`IDOR Prevention: UID ${uid} attempted to download file ${documentId} belonging to another folder.`);
+    // File must be directly inside the authoritative PAN folder OR inside the client's direct-child 'upload' folder.
+    let isAuthorized = Boolean(
+      fileMetadata.parents && fileMetadata.parents.includes(authoritativeDriveFolderId)
+    );
+
+    if (!isAuthorized) {
+      // Check if file is in client's direct-child upload folder
+      const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
+        authoritativeDriveFolderId,
+        { serviceAccountJson },
+        false // Do NOT create folder during download check
+      );
+
+      if (uploadFolderId && fileMetadata.parents && fileMetadata.parents.includes(uploadFolderId)) {
+        isAuthorized = true;
+      }
+    }
+
+    if (!isAuthorized) {
+      logger.warn(`IDOR Prevention: UID ${uid} attempted to download file ${documentId} belonging to another folder or client.`);
       // Return 404 to prevent cross-tenant enumeration
       throw new NotFoundError('Document not found or inaccessible.');
     }
@@ -595,12 +654,23 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     const authoritativeDriveFolderId = driveFolderId.trim();
 
-    // 2. Ensure target Drive folder exists and is usable
+    // 2. Ensure target authoritative PAN Drive folder exists and is usable
     await googleDriveRestService.getDriveFolderMetadata(authoritativeDriveFolderId, {
       serviceAccountJson
     });
 
-    // 3. Parse Multipart Form Data
+    // 3. Resolve or create direct-child 'upload' subfolder under authoritative PAN folder
+    const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
+      authoritativeDriveFolderId,
+      { serviceAccountJson },
+      true // Create if missing
+    );
+
+    if (!uploadFolderId) {
+      throw new BadGatewayError('Failed to resolve or create upload destination folder.');
+    }
+
+    // 4. Parse Multipart Form Data
     let formData: FormData;
     try {
       formData = await c.req.formData();
@@ -609,7 +679,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new BadRequestError('Invalid multipart form data.');
     }
 
-    // 4. Zero-Trust check on multipart fields:
+    // 5. Zero-Trust check on multipart fields:
     // Reject any client-supplied identity or destination folder fields
     for (const key of formData.keys()) {
       const normalized = key.toLowerCase().replace(/[-_]/g, '');
@@ -621,7 +691,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       }
     }
 
-    // 5. Extract and validate file field
+    // 6. Extract and validate file field
     const file = formData.get('file');
     if (!file) {
       throw new BadRequestError('Missing required multipart file field \'file\'.');
@@ -630,12 +700,13 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     // Strict multi-layer file validation (size, MIME type, extension, signature, sanitization)
     const validatedFile = await validateUploadedFile(file);
 
-    // 6. Upload directly to Google Drive into the client's authoritative folder
+    // 7. Upload directly to Google Drive into the client's authoritative 'upload' subfolder
+    // Exactly one destination parent: the resolved upload folder ID.
     const uploadedDocument = await googleDriveRestService.uploadFileMultipart(
       {
         name: validatedFile.sanitizedFilename,
         mimeType: validatedFile.mimeType,
-        parents: [authoritativeDriveFolderId],
+        parents: [uploadFolderId],
         content: validatedFile.buffer
       },
       {
@@ -644,11 +715,11 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     );
 
     logger.info(
-      `Worker: Document uploaded successfully: ID ${uploadedDocument.id}, name '${uploadedDocument.name}' for UID: ${uid}`
+      `Worker: Document uploaded successfully: ID ${uploadedDocument.id}, name '${uploadedDocument.name}' to upload subfolder for UID: ${uid}`
     );
 
-    // 7. Return safe metadata response
-    // Never expose driveFolderId, service account info, or UID
+    // 8. Return safe metadata response
+    // Never expose driveFolderId, uploadFolderId, service account info, or UID
     return c.json({
       success: true,
       message: 'Document uploaded successfully.',

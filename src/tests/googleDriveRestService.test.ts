@@ -392,6 +392,191 @@ async function runGoogleDriveRestServiceTests() {
     console.log('✓ Test 8 Passed: Maps target folder missing to 404 NotFoundError');
   }
 
+  // Test 9: getClientUploadFolderId returns existing upload folder ID without creating a new one
+  {
+    clearTokenCache();
+
+    let createCalled = false;
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files?') && url.includes("name+%3D+%27upload%27")) {
+        // Return existing upload folder
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'existing-upload-folder-id',
+                name: 'upload',
+                mimeType: 'application/vnd.google-apps.folder',
+                trashed: false,
+                parents: ['pan-folder-123']
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (init?.method === 'POST') {
+        createCalled = true;
+        return new Response(
+          JSON.stringify({ id: 'should-not-be-created' }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const folderId = await service.getClientUploadFolderId('pan-folder-123', {
+      serviceAccountJson: testServiceAccountJson,
+      customFetch: mockFetch
+    }, true);
+
+    assert.strictEqual(folderId, 'existing-upload-folder-id');
+    assert.strictEqual(createCalled, false, 'Should not create new folder if upload folder exists');
+    console.log('✓ Test 9 Passed: Reuses existing direct-child upload folder without creating duplicate');
+  }
+
+  // Test 10: getClientUploadFolderId creates 'upload' folder as direct child when missing
+  {
+    clearTokenCache();
+
+    let createdFolderPayload: any = null;
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files?') && url.includes("name+%3D+%27upload%27")) {
+        // No existing upload folder
+        return new Response(
+          JSON.stringify({ files: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (init?.method === 'POST' && url.includes('/drive/v3/files')) {
+        createdFolderPayload = JSON.parse(init.body as string);
+        return new Response(
+          JSON.stringify({
+            id: 'newly-created-upload-folder-id',
+            name: createdFolderPayload.name,
+            mimeType: createdFolderPayload.mimeType,
+            parents: createdFolderPayload.parents
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const folderId = await service.getClientUploadFolderId('pan-folder-123', {
+      serviceAccountJson: testServiceAccountJson,
+      customFetch: mockFetch
+    }, true);
+
+    assert.strictEqual(folderId, 'newly-created-upload-folder-id');
+    assert.deepStrictEqual(createdFolderPayload, {
+      name: 'upload',
+      mimeType: 'application/vnd.google-apps.folder',
+      parents: ['pan-folder-123']
+    });
+    console.log('✓ Test 10 Passed: Creates upload folder with parent=PAN folder when missing and createIfMissing=true');
+  }
+
+  // Test 11: getClientUploadFolderId returns null when folder missing and createIfMissing=false
+  {
+    clearTokenCache();
+
+    let createCalled = false;
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/drive/v3/files?') && url.includes("name+%3D+%27upload%27")) {
+        return new Response(
+          JSON.stringify({ files: [] }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (init?.method === 'POST') {
+        createCalled = true;
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const folderId = await service.getClientUploadFolderId('pan-folder-123', {
+      serviceAccountJson: testServiceAccountJson,
+      customFetch: mockFetch
+    }, false);
+
+    assert.strictEqual(folderId, null);
+    assert.strictEqual(createCalled, false);
+    console.log('✓ Test 11 Passed: Returns null without creating folder when createIfMissing=false');
+  }
+
+  // Test 12: getClientUploadFolderId error handling (invalid ID & upstream failure)
+  {
+    clearTokenCache();
+
+    // Invalid/empty folder ID
+    await assert.rejects(
+      async () => {
+        await service.getClientUploadFolderId('', { serviceAccountJson: testServiceAccountJson });
+      },
+      (err: any) => {
+        assert.strictEqual(err.statusCode, 400);
+        return true;
+      }
+    );
+
+    // Upstream error on search
+    const failingFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('Google Drive Internal Error 500', { status: 500 });
+    }) as any;
+
+    await assert.rejects(
+      async () => {
+        await service.getClientUploadFolderId('pan-folder-123', {
+          serviceAccountJson: testServiceAccountJson,
+          customFetch: failingFetch
+        });
+      },
+      (err: any) => {
+        assert.strictEqual(err.statusCode, 502);
+        return true;
+      }
+    );
+    console.log('✓ Test 12 Passed: Validates inputs and handles upstream Drive failures safely');
+  }
+
   console.log('--- All Google Drive REST Service Tests Passed! ---\n');
 }
 

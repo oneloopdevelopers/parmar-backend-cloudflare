@@ -434,7 +434,131 @@ export class GoogleDriveRestService {
       throw new BadGatewayError(`Unable to upload file to Google Drive: ${msg}`);
     }
   }
+
+  /**
+   * Resolves or creates the direct-child 'upload' folder for a client's authoritative PAN folder.
+   *
+   * Query Requirements:
+   * - Direct child of authoritative PAN folder: '{AUTHORITATIVE_PAN_FOLDER_ID}' in parents
+   * - Exact folder name: name = 'upload'
+   * - mimeType: application/vnd.google-apps.folder
+   * - Not trashed: trashed = false
+   * - No global name-only search.
+   *
+   * Concurrency & Duplicate Folder Protection:
+   * The Google Drive v3 REST API does not provide a transactional uniqueness guarantee
+   * on folder names under a parent. Under high concurrent load without an existing 'upload'
+   * folder, simultaneous requests could potentially create duplicate 'upload' folders.
+   * We implement the safest practical approach supported by Cloudflare Workers and Google Drive REST:
+   * 1. Search for the direct-child upload folder.
+   * 2. If found, use its folder ID.
+   * 3. If not found and createIfMissing is true, create it and use the returned folder ID.
+   */
+  public async getClientUploadFolderId(
+    authoritativePanFolderId: string,
+    options: DriveRestOptions,
+    createIfMissing: boolean = true
+  ): Promise<string | null> {
+    if (!authoritativePanFolderId || typeof authoritativePanFolderId !== 'string' || !authoritativePanFolderId.trim()) {
+      throw new BadRequestError('A valid Google Drive PAN folder ID is required.');
+    }
+
+    const cleanPanFolderId = authoritativePanFolderId.trim();
+    const safePanFolderId = cleanPanFolderId.replace(/'/g, "\\'");
+    const query = `name = 'upload' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and '${safePanFolderId}' in parents`;
+
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      scopes: GOOGLE_DRIVE_SCOPE,
+      customFetch: options.customFetch
+    });
+
+    const urlParams = new URLSearchParams({
+      q: query,
+      fields: 'files(id, name, mimeType, trashed, parents)',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+      pageSize: '10'
+    });
+
+    const url = `https://www.googleapis.com/drive/v3/files?${urlParams.toString()}`;
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error(`Drive REST files.list for upload folder failed with status ${response.status}:`, errorText);
+        throw new BadGatewayError(`Unable to search Google Drive folders: HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        files?: Array<{ id?: string; name?: string; mimeType?: string; trashed?: boolean; parents?: string[] }>;
+      };
+
+      const existingFolders = data.files || [];
+      if (existingFolders.length > 0 && existingFolders[0].id) {
+        return existingFolders[0].id;
+      }
+
+      if (!createIfMissing) {
+        return null;
+      }
+
+      // Create new 'upload' folder under authoritative PAN folder
+      const createUrl = 'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name,mimeType,parents';
+      const createRes = await fetchImpl(createUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json; charset=UTF-8',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          name: 'upload',
+          mimeType: 'application/vnd.google-apps.folder',
+          parents: [cleanPanFolderId]
+        })
+      });
+
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        logger.error(`Drive REST files.create for upload folder failed with status ${createRes.status}:`, errText);
+        throw new BadGatewayError(`Unable to create upload folder in Google Drive: HTTP ${createRes.status}`);
+      }
+
+      const createdData = (await createRes.json()) as { id?: string; name?: string; mimeType?: string };
+      if (!createdData || !createdData.id) {
+        throw new BadGatewayError('Google Drive created folder but did not return a valid folder ID.');
+      }
+
+      return createdData.id;
+    } catch (err) {
+      if (err instanceof BadRequestError || err instanceof NotFoundError || err instanceof BadGatewayError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Error resolving or creating client upload folder:', msg);
+      throw new BadGatewayError(`Unable to resolve client upload folder: ${msg}`);
+    }
+  }
 }
 
-
 export const googleDriveRestService = new GoogleDriveRestService();
+
+/**
+ * Reusable helper function to resolve or create the client's direct-child 'upload' folder.
+ */
+export async function getClientUploadFolderId(
+  authoritativePanFolderId: string,
+  options: DriveRestOptions,
+  createIfMissing: boolean = true
+): Promise<string | null> {
+  return googleDriveRestService.getClientUploadFolderId(authoritativePanFolderId, options, createIfMissing);
+}

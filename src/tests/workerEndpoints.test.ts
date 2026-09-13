@@ -54,8 +54,19 @@ async function runWorkerEndpointsTests() {
         claims: { sub: 'non-existent-user' }
       };
     }
+    if (token === 'token-new-client') {
+      return {
+        uid: 'user-new-client-789',
+        email: 'newclient@example.com',
+        claims: { sub: 'user-new-client-789' }
+      };
+    }
     throw new Error('Invalid Firebase ID token signature');
   };
+
+  // Test observation state
+  let lastUploadedParents: string[] = [];
+  let lastCreatedFolder: any = null;
 
   // Setup mock global fetch for Google OAuth, Firestore REST, and Drive REST
   const originalFetch = globalThis.fetch;
@@ -85,6 +96,24 @@ async function runWorkerEndpointsTests() {
             phone: { stringValue: '+91 98765 43210' },
             panNumber: { stringValue: 'ABCDE1234F' },
             driveFolderId: { stringValue: 'folder-active-123' },
+            role: { stringValue: 'client' },
+            status: { stringValue: 'active' }
+          }
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    if (url.includes('/databases/(default)/documents/users/user-new-client-789')) {
+      return new Response(
+        JSON.stringify({
+          name: `projects/${projectId}/databases/(default)/documents/users/user-new-client-789`,
+          fields: {
+            name: { stringValue: 'New Client' },
+            email: { stringValue: 'newclient@example.com' },
+            phone: { stringValue: '+91 99999 88888' },
+            panNumber: { stringValue: 'NEWCL1234F' },
+            driveFolderId: { stringValue: 'folder-new-client-789' },
             role: { stringValue: 'client' },
             status: { stringValue: 'active' }
           }
@@ -157,29 +186,105 @@ async function runWorkerEndpointsTests() {
       );
     }
 
-    // 4. Drive REST endpoint: File listing
-    if (url.includes('/drive/v3/files?') && !url.includes('/upload/')) {
+    if (url.includes('/drive/v3/files/folder-new-client-789?') && url.includes('fields=id,name,mimeType,trashed')) {
       return new Response(
         JSON.stringify({
-          files: [
-            {
-              id: 'doc-file-1',
-              name: 'PAN_Card.pdf',
-              mimeType: 'application/pdf',
-              size: '102400',
-              createdTime: '2026-09-01T10:00:00Z',
-              modifiedTime: '2026-09-01T10:00:00Z'
-            },
-            {
-              id: 'doc-file-2',
-              name: 'Bank_Statement.pdf',
-              mimeType: 'application/pdf',
-              size: '512000',
-              createdTime: '2026-09-02T11:00:00Z',
-              modifiedTime: '2026-09-02T11:00:00Z'
-            }
-          ]
+          id: 'folder-new-client-789',
+          name: 'New Client Documents',
+          mimeType: 'application/vnd.google-apps.folder',
+          trashed: false
         }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 3B. Drive REST endpoint: Folder creation (POST /drive/v3/files)
+    if (init?.method === 'POST' && url.includes('/drive/v3/files') && !url.includes('uploadType=multipart')) {
+      const body = JSON.parse(init.body as string);
+      lastCreatedFolder = body;
+      return new Response(
+        JSON.stringify({
+          id: 'created-upload-folder-789',
+          name: body.name,
+          mimeType: body.mimeType,
+          parents: body.parents
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 3C. Drive REST endpoint: Upload folder search (name = 'upload')
+    if (url.includes('/drive/v3/files?') && url.includes("name+%3D+%27upload%27")) {
+      if (url.includes('folder-active-123')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'upload-folder-active-123',
+                name: 'upload',
+                mimeType: 'application/vnd.google-apps.folder',
+                trashed: false,
+                parents: ['folder-active-123']
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ files: [] }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 4. Drive REST endpoint: File listing
+    if (url.includes('/drive/v3/files?') && !url.includes('/upload/')) {
+      if (url.includes('upload-folder-active-123')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'doc-uploaded-1',
+                name: 'Client_Self_Uploaded.pdf',
+                mimeType: 'application/pdf',
+                size: '20480',
+                createdTime: '2026-09-03T12:00:00Z',
+                modifiedTime: '2026-09-03T12:00:00Z'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('folder-active-123')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'doc-file-1',
+                name: 'PAN_Card.pdf',
+                mimeType: 'application/pdf',
+                size: '102400',
+                createdTime: '2026-09-01T10:00:00Z',
+                modifiedTime: '2026-09-01T10:00:00Z'
+              },
+              {
+                id: 'doc-file-2',
+                name: 'Bank_Statement.pdf',
+                mimeType: 'application/pdf',
+                size: '512000',
+                createdTime: '2026-09-02T11:00:00Z',
+                modifiedTime: '2026-09-02T11:00:00Z'
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response(
+        JSON.stringify({ files: [] }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }
@@ -192,6 +297,15 @@ async function runWorkerEndpointsTests() {
           headers: {
             'Content-Type': 'application/pdf',
             'Content-Length': '35'
+          }
+        });
+      }
+      if (url.includes('/drive/v3/files/doc-uploaded-1?alt=media')) {
+        return new Response('Mock Binary Content of Client_Self_Uploaded.pdf', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Length': '46'
           }
         });
       }
@@ -220,6 +334,32 @@ async function runWorkerEndpointsTests() {
             mimeType: 'application/pdf',
             size: '102400',
             parents: ['folder-active-123'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-uploaded-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-uploaded-1',
+            name: 'Client_Self_Uploaded.pdf',
+            mimeType: 'application/pdf',
+            size: '20480',
+            parents: ['upload-folder-active-123'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-uploaded-other-client?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-uploaded-other-client',
+            name: 'Other_Client_Uploaded.pdf',
+            mimeType: 'application/pdf',
+            size: '20480',
+            parents: ['upload-folder-other-999'], // Belongs to another client's upload folder
             trashed: false
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -326,11 +466,17 @@ async function runWorkerEndpointsTests() {
         });
       }
 
-      // Extract filename from multipart metadata if present
+      // Extract filename and parents from multipart metadata if present
       let uploadedName = 'uploaded_doc.pdf';
       const nameMatch = bodyText.match(/"name":"([^"]+)"/);
       if (nameMatch) {
         uploadedName = nameMatch[1];
+      }
+      const parentsMatch = bodyText.match(/"parents":\["([^"]+)"\]/);
+      if (parentsMatch) {
+        lastUploadedParents = [parentsMatch[1]];
+      } else {
+        lastUploadedParents = [];
       }
 
       return new Response(
@@ -528,9 +674,10 @@ async function runWorkerEndpointsTests() {
       assert.strictEqual(res.status, 200);
       const json: any = await res.json();
       assert.strictEqual(json.success, true);
-      assert.strictEqual(json.documents.length, 2);
-      assert.strictEqual(json.documents[0].name, 'PAN_Card.pdf');
-      assert.strictEqual(json.documents[1].name, 'Bank_Statement.pdf');
+      assert.strictEqual(json.documents.length, 3);
+      assert.ok(json.documents.some((d: any) => d.name === 'PAN_Card.pdf'));
+      assert.ok(json.documents.some((d: any) => d.name === 'Bank_Statement.pdf'));
+      assert.ok(json.documents.some((d: any) => d.name === 'Client_Self_Uploaded.pdf'));
       assert.strictEqual(json.driveFolderId, undefined, 'driveFolderId must NEVER be returned');
       assert.strictEqual(json.uid, undefined, 'UID must NEVER be returned');
 
@@ -1220,6 +1367,200 @@ async function runWorkerEndpointsTests() {
         assert.strictEqual(downloadRes.status, 200);
         assert.strictEqual(downloadRes.headers.get('Content-Type'), 'application/pdf');
         console.log('✓ Test 9AB Passed: Existing listing and download endpoints continue to pass all tests');
+      }
+
+      // =========================================================================
+      // TEST SUITE 10: {PAN_NUMBER}/upload/ FOLDER ARCHITECTURE & SECURITY TESTS
+      // =========================================================================
+      console.log('\n--- Running Test Suite 10: {PAN_NUMBER}/upload/ Architecture & Security Tests ---');
+
+      // 10A. Document listing merges files from PAN root folder and direct-child upload subfolder
+      {
+        const req = new Request('http://localhost/api/documents', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.documents.length, 3, 'Should merge 2 PAN files + 1 upload folder file');
+
+        const docIds = json.documents.map((d: any) => d.id);
+        assert.ok(docIds.includes('doc-file-1'), 'Must include doc-file-1 from PAN root folder');
+        assert.ok(docIds.includes('doc-file-2'), 'Must include doc-file-2 from PAN root folder');
+        assert.ok(docIds.includes('doc-uploaded-1'), 'Must include doc-uploaded-1 from upload subfolder');
+
+        // Confirm no folders or shortcuts in document list
+        for (const doc of json.documents) {
+          assert.notStrictEqual(doc.mimeType, 'application/vnd.google-apps.folder');
+          assert.notStrictEqual(doc.mimeType, 'application/vnd.google-apps.shortcut');
+        }
+        console.log('✓ Test 10A Passed: Document listing merges files from PAN root and upload/ subfolder');
+      }
+
+      // 10B. Document listing works seamlessly when client has no upload subfolder yet
+      {
+        const req = new Request('http://localhost/api/documents', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-new-client' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.ok(Array.isArray(json.documents));
+        assert.strictEqual(json.documents.length, 0, 'New client without upload subfolder returns empty array safely');
+        console.log('✓ Test 10B Passed: Document listing succeeds without error when upload/ subfolder does not exist');
+      }
+
+      // 10C. Client upload when upload/ subfolder already exists: file is placed into upload/ subfolder
+      {
+        lastUploadedParents = [];
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'Client_Tax_Return.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.data.document.name, 'Client_Tax_Return.pdf');
+
+        // Verify parents of uploaded file: MUST be the 'upload' subfolder ID, NOT the PAN root folder
+        assert.deepStrictEqual(
+          lastUploadedParents,
+          ['upload-folder-active-123'],
+          'File must be uploaded into direct-child upload subfolder'
+        );
+        console.log('✓ Test 10C Passed: Upload places file into existing upload/ subfolder (parents: upload folder ID)');
+      }
+
+      // 10D. Client upload when upload/ subfolder does NOT exist: creates upload/ subfolder as direct child and uploads into it
+      {
+        lastCreatedFolder = null;
+        lastUploadedParents = [];
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'Initial_Registration.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-new-client' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+
+        // Verify folder creation call
+        assert.ok(lastCreatedFolder, 'Should have called Google Drive files.create to create upload folder');
+        assert.strictEqual(lastCreatedFolder.name, 'upload');
+        assert.strictEqual(lastCreatedFolder.mimeType, 'application/vnd.google-apps.folder');
+        assert.deepStrictEqual(
+          lastCreatedFolder.parents,
+          ['folder-new-client-789'],
+          'Upload folder must be created as direct child of authoritative PAN folder'
+        );
+
+        // Verify upload destination
+        assert.deepStrictEqual(
+          lastUploadedParents,
+          ['created-upload-folder-789'],
+          'File must be placed inside newly created upload folder'
+        );
+        console.log('✓ Test 10D Passed: Upload automatically creates upload/ subfolder as direct child when missing');
+      }
+
+      // 10E. Security: Rejection of client-supplied destinationFolderId or destination_folder in query, headers, or form
+      {
+        // 10E.1 In query string
+        const reqQuery = new Request('http://localhost/api/documents/upload?destinationFolderId=evil-folder-123', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer token-active-123',
+            'Content-Type': 'multipart/form-data; boundary=----boundary'
+          },
+          body: '------boundary--'
+        });
+        const resQuery = await app.request(reqQuery, {}, workerEnv);
+        assert.strictEqual(resQuery.status, 400);
+        const jsonQuery: any = await resQuery.json();
+        assert.ok(JSON.stringify(jsonQuery).includes('destinationFolderId'));
+
+        // 10E.2 In custom header
+        const reqHeader = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer token-active-123',
+            'X-Destination-Folder-Id': 'evil-folder-123',
+            'Content-Type': 'multipart/form-data; boundary=----boundary'
+          },
+          body: '------boundary--'
+        });
+        const resHeader = await app.request(reqHeader, {}, workerEnv);
+        assert.strictEqual(resHeader.status, 400);
+        const jsonHeader: any = await resHeader.json();
+        assert.ok(JSON.stringify(jsonHeader).includes('x-destination-folder-id'));
+
+        // 10E.3 In multipart field (destinationFolderId)
+        const fdForm1 = new FormData();
+        fdForm1.append('destinationFolderId', 'evil-folder-123');
+        fdForm1.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const reqForm1 = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fdForm1
+        });
+        const resForm1 = await app.request(reqForm1, {}, workerEnv);
+        assert.strictEqual(resForm1.status, 400);
+        const jsonForm1: any = await resForm1.json();
+        assert.ok(JSON.stringify(jsonForm1).includes('destinationFolderId'));
+
+        // 10E.4 In multipart field (destination_folder)
+        const fdForm2 = new FormData();
+        fdForm2.append('destination_folder', 'evil-folder-123');
+        fdForm2.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const reqForm2 = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fdForm2
+        });
+        const resForm2 = await app.request(reqForm2, {}, workerEnv);
+        assert.strictEqual(resForm2.status, 400);
+        const jsonForm2: any = await resForm2.json();
+        assert.ok(JSON.stringify(jsonForm2).includes('destination_folder'));
+
+        console.log('✓ Test 10E Passed: Client-supplied destination folder fields strictly rejected across query, headers, and form data');
+      }
+
+      // 10F. Download authorization for file in upload/ subfolder succeeds
+      {
+        const req = new Request('http://localhost/api/documents/doc-uploaded-1/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        assert.strictEqual(res.headers.get('Content-Type'), 'application/pdf');
+        const text = await res.text();
+        assert.strictEqual(text, 'Mock Binary Content of Client_Self_Uploaded.pdf');
+        console.log('✓ Test 10F Passed: Download of file located in client\'s upload/ subfolder is authorized');
+      }
+
+      // 10G. Download authorization IDOR rejection for file in another client's upload folder
+      {
+        const req = new Request('http://localhost/api/documents/doc-uploaded-other-client/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 404, 'Must return 404 to prevent IDOR and tenant enumeration');
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        console.log('✓ Test 10G Passed: Attempt to download file in another client\'s upload folder strictly rejected with 404');
       }
     }
 
