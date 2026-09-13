@@ -6,7 +6,9 @@ export const MAX_UPLOAD_FILE_SIZE_BYTES = 15 * 1024 * 1024; // 15 MB
 export const ALLOWED_MIME_TYPES = [
   'application/pdf',
   'image/jpeg',
-  'image/png'
+  'image/png',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 ] as const;
 
 export type AllowedMimeType = (typeof ALLOWED_MIME_TYPES)[number];
@@ -14,8 +16,34 @@ export type AllowedMimeType = (typeof ALLOWED_MIME_TYPES)[number];
 export const ALLOWED_EXTENSIONS_BY_MIME: Record<AllowedMimeType, string[]> = {
   'application/pdf': ['.pdf'],
   'image/jpeg': ['.jpg', '.jpeg'],
-  'image/png': ['.png']
+  'image/png': ['.png'],
+  'application/vnd.ms-excel': ['.xls'],
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx']
 };
+
+/**
+ * Searches buffer for an ASCII string marker within the first maxScan bytes.
+ */
+function bufferContainsAscii(buffer: Uint8Array, searchStr: string, maxScan = 16384): boolean {
+  const limit = Math.min(buffer.length, maxScan);
+  const searchLen = searchStr.length;
+  if (searchLen === 0 || limit < searchLen) return false;
+
+  const firstChar = searchStr.charCodeAt(0);
+  for (let i = 0; i <= limit - searchLen; i++) {
+    if (buffer[i] === firstChar) {
+      let match = true;
+      for (let j = 1; j < searchLen; j++) {
+        if (buffer[i + j] !== searchStr.charCodeAt(j)) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Validates the file's binary magic bytes against its declared MIME type.
@@ -59,6 +87,38 @@ export function validateFileSignature(buffer: Uint8Array, mimeType: AllowedMimeT
         buffer[5] === 0x0a && // \n
         buffer[6] === 0x1a && // EOF
         buffer[7] === 0x0a    // \n
+      );
+
+    case 'application/vnd.ms-excel':
+      // Microsoft Compound File Binary (CFB) format: D0 CF 11 E0 A1 B1 1A E1
+      return (
+        buffer.length >= 8 &&
+        buffer[0] === 0xd0 &&
+        buffer[1] === 0xcf &&
+        buffer[2] === 0x11 &&
+        buffer[3] === 0xe0 &&
+        buffer[4] === 0xa1 &&
+        buffer[5] === 0xb1 &&
+        buffer[6] === 0x1a &&
+        buffer[7] === 0xe1
+      );
+
+    case 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+      // Office Open XML spreadsheet: standard PKZIP header 0x50, 0x4B, 0x03, 0x04
+      if (
+        buffer.length < 30 ||
+        buffer[0] !== 0x50 ||
+        buffer[1] !== 0x4b ||
+        buffer[2] !== 0x03 ||
+        buffer[3] !== 0x04
+      ) {
+        return false;
+      }
+      // Inspect zip container entries for Office Open XML spreadsheet components
+      return (
+        bufferContainsAscii(buffer, '[Content_Types].xml') ||
+        bufferContainsAscii(buffer, 'xl/') ||
+        bufferContainsAscii(buffer, '_rels')
       );
 
     default:
@@ -181,13 +241,15 @@ export async function validateUploadedFile(
   // Check MIME type
   const rawMime = (candidate.type || '').toLowerCase().trim();
   if (!rawMime) {
-    throw new BadRequestError('Missing file MIME type. Only PDF, JPEG, and PNG files are accepted.');
+    throw new BadRequestError(
+      'Missing file MIME type. Only PDF, JPEG, PNG, XLS, and XLSX files are accepted.'
+    );
   }
 
   const normalizedMime = rawMime.split(';')[0].trim();
   if (!ALLOWED_MIME_TYPES.includes(normalizedMime as AllowedMimeType)) {
     throw new BadRequestError(
-      `Unsupported file type '${normalizedMime}'. Only PDF (application/pdf), JPEG (image/jpeg), and PNG (image/png) are allowed.`
+      `Unsupported file type '${normalizedMime}'. Only PDF, JPEG, PNG, XLS, and XLSX files are allowed.`
     );
   }
 

@@ -16,12 +16,33 @@ import { BadRequestError, NotFoundError, BadGatewayError } from '../utils/errors
 import { logger } from '../utils/logger';
 
 export interface DriveRestOptions {
-  serviceAccountJson: string;
+  serviceAccountJson?: string;
+  accessToken?: string;
   customFetch?: typeof fetch;
   maxPages?: number;
 }
 
 export class GoogleDriveRestService {
+  /**
+   * Resolves the access token from either OAuth accessToken or serviceAccountJson fallback.
+   */
+  private async getAccessToken(
+    options: DriveRestOptions,
+    scopes: string = GOOGLE_DRIVE_SCOPE
+  ): Promise<string> {
+    if (options.accessToken && options.accessToken.trim()) {
+      return options.accessToken.trim();
+    }
+    if (options.serviceAccountJson && options.serviceAccountJson.trim()) {
+      const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+        scopes,
+        customFetch: options.customFetch
+      });
+      return accessToken;
+    }
+    throw new BadRequestError('Either Google OAuth accessToken or serviceAccountJson must be provided.');
+  }
+
   /**
    * Retrieves safe metadata for the given folderId using the Google Drive v3 REST API.
    */
@@ -35,10 +56,7 @@ export class GoogleDriveRestService {
 
     const cleanFolderId = encodeURIComponent(folderId.trim());
     const fetchImpl = options.customFetch || fetch;
-    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_SCOPE,
-      customFetch: options.customFetch
-    });
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_SCOPE);
 
     const url = `https://www.googleapis.com/drive/v3/files/${cleanFolderId}?fields=id,name,mimeType,trashed&supportsAllDrives=true`;
 
@@ -110,10 +128,7 @@ export class GoogleDriveRestService {
     const safeFolderId = folderId.trim().replace(/'/g, "\\'");
     const query = `'${safeFolderId}' in parents and trashed = false`;
     const fetchImpl = options.customFetch || fetch;
-    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_SCOPE,
-      customFetch: options.customFetch
-    });
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_SCOPE);
 
     const maxPages = Math.min(Math.max(1, options.maxPages || 10), 50);
     const allFiles: DriveFileSafeMetadata[] = [];
@@ -206,10 +221,7 @@ export class GoogleDriveRestService {
 
     const cleanFileId = encodeURIComponent(fileId.trim());
     const fetchImpl = options.customFetch || fetch;
-    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_SCOPE,
-      customFetch: options.customFetch
-    });
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_SCOPE);
 
     const url = `https://www.googleapis.com/drive/v3/files/${cleanFileId}?fields=id,name,mimeType,parents,size,trashed&supportsAllDrives=true`;
 
@@ -281,10 +293,7 @@ export class GoogleDriveRestService {
 
     const cleanFileId = encodeURIComponent(fileId.trim());
     const fetchImpl = options.customFetch || fetch;
-    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_SCOPE,
-      customFetch: options.customFetch
-    });
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_SCOPE);
 
     const url = `https://www.googleapis.com/drive/v3/files/${cleanFileId}?alt=media&supportsAllDrives=true`;
 
@@ -352,10 +361,7 @@ export class GoogleDriveRestService {
     }
 
     const fetchImpl = options.customFetch || fetch;
-    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_WRITE_SCOPE,
-      customFetch: options.customFetch
-    });
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_WRITE_SCOPE);
 
     const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
     const url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,size,createdTime';
@@ -483,10 +489,7 @@ export class GoogleDriveRestService {
     const query = `name = 'upload' and mimeType = 'application/vnd.google-apps.folder' and trashed = false and '${safePanFolderId}' in parents`;
 
     const fetchImpl = options.customFetch || fetch;
-    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
-      scopes: GOOGLE_DRIVE_WRITE_SCOPE,
-      customFetch: options.customFetch
-    });
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_WRITE_SCOPE);
 
     const urlParams = new URLSearchParams({
       q: query,

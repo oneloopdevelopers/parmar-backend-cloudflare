@@ -73,6 +73,41 @@ export function decodeFirestoreValue(field: FirestoreField | null | undefined): 
 }
 
 /**
+ * Encodes a JavaScript primitive, array, or object into a Firestore REST field structure.
+ */
+export function encodeFirestoreValue(val: unknown): FirestoreField {
+  if (val === null || val === undefined) {
+    return { nullValue: null };
+  }
+  if (typeof val === 'string') {
+    return { stringValue: val };
+  }
+  if (typeof val === 'boolean') {
+    return { booleanValue: val };
+  }
+  if (typeof val === 'number') {
+    if (Number.isInteger(val)) {
+      return { integerValue: String(val) };
+    }
+    return { doubleValue: val };
+  }
+  if (val instanceof Date) {
+    return { timestampValue: val.toISOString() };
+  }
+  if (Array.isArray(val)) {
+    return { arrayValue: { values: val.map(encodeFirestoreValue) } };
+  }
+  if (typeof val === 'object') {
+    const fields: Record<string, FirestoreField> = {};
+    for (const [k, v] of Object.entries(val as Record<string, unknown>)) {
+      fields[k] = encodeFirestoreValue(v);
+    }
+    return { mapValue: { fields } };
+  }
+  return { stringValue: String(val) };
+}
+
+/**
  * Decodes all fields of a Firestore REST document into a flat JavaScript record.
  */
 export function decodeFirestoreFields(fields: Record<string, FirestoreField>): Record<string, unknown> {
@@ -84,6 +119,58 @@ export function decodeFirestoreFields(fields: Record<string, FirestoreField>): R
 }
 
 export class FirestoreRestService {
+  /**
+   * Creates or updates a document in Firestore using the Google Cloud Firestore REST API v1.
+   * Path format: `{collection}/{docId}`
+   */
+  public async setDocument(
+    collection: string,
+    docId: string,
+    data: Record<string, unknown>,
+    options: {
+      projectId: string;
+      serviceAccountJson: string;
+      customFetch?: typeof fetch;
+    }
+  ): Promise<void> {
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      customFetch: options.customFetch
+    });
+
+    const cleanDocId = encodeURIComponent(docId.trim());
+    const url = `https://firestore.googleapis.com/v1/projects/${options.projectId}/databases/(default)/documents/${collection}/${cleanDocId}`;
+
+    const fields: Record<string, FirestoreField> = {};
+    for (const [key, value] of Object.entries(data)) {
+      fields[key] = encodeFirestoreValue(value);
+    }
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'PATCH',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({ fields })
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        logger.error(`Firestore REST setDocument failed with ${response.status} for ${collection}/${docId}:`, errorBody);
+        throw new BadGatewayError(`Cloud Firestore REST write error: HTTP ${response.status}`);
+      }
+    } catch (err) {
+      if (err instanceof BadRequestError || err instanceof NotFoundError || err instanceof BadGatewayError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Failed to write document ${collection}/${docId} via Firestore REST:`, msg);
+      throw new BadGatewayError(`Failed to communicate with Cloud Firestore REST API: ${msg}`);
+    }
+  }
   /**
    * Retrieves a document from Firestore using the Google Cloud Firestore REST API v1.
    * Path format: `users/{uid}`

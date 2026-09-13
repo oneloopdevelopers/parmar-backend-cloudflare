@@ -16,30 +16,46 @@ async function runFileValidationUtilsTests() {
   const validPdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a]);
   const validJpgBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
   const validPngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+  const validXlsBytes = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00, 0x00]);
+  const validXlsxBytes = new Uint8Array([
+    0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00,
+    ...new TextEncoder().encode('[Content_Types].xml'),
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+  ]);
 
   // Test 1: ALLOWED_MIME_TYPES whitelist
   assert.ok(ALLOWED_MIME_TYPES.includes('application/pdf'));
   assert.ok(ALLOWED_MIME_TYPES.includes('image/jpeg'));
   assert.ok(ALLOWED_MIME_TYPES.includes('image/png'));
+  assert.ok(ALLOWED_MIME_TYPES.includes('application/vnd.ms-excel'));
+  assert.ok(ALLOWED_MIME_TYPES.includes('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'));
   assert.strictEqual(ALLOWED_MIME_TYPES.includes('application/zip' as any), false);
-  console.log('✓ Test 1 Passed: ALLOWED_MIME_TYPES checks whitelist');
+  console.log('✓ Test 1 Passed: ALLOWED_MIME_TYPES checks whitelist including XLS and XLSX');
 
   // Test 2: ALLOWED_EXTENSIONS_BY_MIME
   assert.deepStrictEqual(ALLOWED_EXTENSIONS_BY_MIME['application/pdf'], ['.pdf']);
   assert.deepStrictEqual(ALLOWED_EXTENSIONS_BY_MIME['image/jpeg'], ['.jpg', '.jpeg']);
   assert.deepStrictEqual(ALLOWED_EXTENSIONS_BY_MIME['image/png'], ['.png']);
+  assert.deepStrictEqual(ALLOWED_EXTENSIONS_BY_MIME['application/vnd.ms-excel'], ['.xls']);
+  assert.deepStrictEqual(ALLOWED_EXTENSIONS_BY_MIME['application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'], ['.xlsx']);
   console.log('✓ Test 2 Passed: ALLOWED_EXTENSIONS_BY_MIME defines allowed extensions');
 
   // Test 3: validateFileSignature
   assert.strictEqual(validateFileSignature(validPdfBytes, 'application/pdf'), true);
   assert.strictEqual(validateFileSignature(validJpgBytes, 'image/jpeg'), true);
   assert.strictEqual(validateFileSignature(validPngBytes, 'image/png'), true);
+  assert.strictEqual(validateFileSignature(validXlsBytes, 'application/vnd.ms-excel'), true);
+  assert.strictEqual(validateFileSignature(validXlsxBytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), true);
   // Spoofed: PDF bytes with JPEG MIME
   assert.strictEqual(validateFileSignature(validPdfBytes, 'image/jpeg'), false);
   // Spoofed: plain text with PDF MIME
   assert.strictEqual(validateFileSignature(new TextEncoder().encode('Hello world'), 'application/pdf'), false);
+  // Spoofed: plain zip bytes without OOXML parts
+  const genericZipBytes = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00, 0x00, 0x00, 0x00, ...new TextEncoder().encode('random_payload_file.bin')]);
+  assert.strictEqual(validateFileSignature(genericZipBytes, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'), false);
   // Short buffer
   assert.strictEqual(validateFileSignature(new Uint8Array([0x25, 0x50]), 'application/pdf'), false);
+  assert.strictEqual(validateFileSignature(new Uint8Array([0xd0, 0xcf, 0x11]), 'application/vnd.ms-excel'), false);
   console.log('✓ Test 3 Passed: validateFileSignature checks magic bytes strictly');
 
   // Test 4: sanitizeUploadFilename
@@ -81,6 +97,24 @@ async function runFileValidationUtilsTests() {
     const result = await validateUploadedFile(pngFile);
     assert.strictEqual(result.mimeType, 'image/png');
     console.log('✓ Test 7 Passed: validateUploadedFile accepts valid PNG');
+  }
+
+  // Test 7B: validateUploadedFile with valid XLS
+  {
+    const xlsFile = new File([validXlsBytes], 'financial_statement.xls', { type: 'application/vnd.ms-excel' });
+    const result = await validateUploadedFile(xlsFile);
+    assert.strictEqual(result.sanitizedFilename, 'financial_statement.xls');
+    assert.strictEqual(result.mimeType, 'application/vnd.ms-excel');
+    console.log('✓ Test 7B Passed: validateUploadedFile accepts valid XLS');
+  }
+
+  // Test 7C: validateUploadedFile with valid XLSX
+  {
+    const xlsxFile = new File([validXlsxBytes], 'balance_sheet.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const result = await validateUploadedFile(xlsxFile);
+    assert.strictEqual(result.sanitizedFilename, 'balance_sheet.xlsx');
+    assert.strictEqual(result.mimeType, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    console.log('✓ Test 7C Passed: validateUploadedFile accepts valid XLSX');
   }
 
   // Test 8: Empty file

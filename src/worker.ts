@@ -5,9 +5,26 @@ import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedE
 import { maskPanNumber } from './utils/clientProfileUtils';
 import { verifyFirebaseIdToken } from './services/firebaseTokenVerifier';
 import { firestoreRestService } from './services/firestoreRestService';
-import { googleDriveRestService } from './services/googleDriveRestService';
+import { googleDriveRestService, DriveRestOptions } from './services/googleDriveRestService';
 import { validateUploadedFile } from './utils/fileValidationUtils';
 import { logger } from './utils/logger';
+import {
+  generateOAuthState,
+  storeOAuthState,
+  validateAndConsumeOAuthState,
+  buildGoogleOAuthUrl,
+  exchangeAuthorizationCode,
+  encryptRefreshToken,
+  getGoogleDriveAccountEmail,
+  clearOAuthTokenCache,
+  getGoogleDriveOAuthAccessToken,
+  timingSafeEqual,
+  DEFAULT_REDIRECT_URI,
+  resolveOAuthRedirectUri,
+  isGoogleOAuthConfigured,
+  createSetupSession,
+  validateAndConsumeSetupToken
+} from './services/googleOAuthService';
 
 export interface WorkerVariables {
   verifiedUid: string;
@@ -49,6 +66,43 @@ export function getServiceAccountJsonFromEnv(env?: Env): string {
     }
   }
   return '';
+}
+
+/**
+ * Resolves Google Drive authorization options.
+ * If Google OAuth is configured, Google Drive operations MUST use the storage-owner OAuth access token.
+ * If OAuth token acquisition fails, throws a controlled backend error and NEVER silently falls back.
+ * The service account remains available only when Google OAuth is NOT configured.
+ */
+export async function resolveDriveAuthOptions(
+  env?: Env,
+  serviceAccountJson?: string
+): Promise<DriveRestOptions> {
+  const oauthConfigured = isGoogleOAuthConfigured(env);
+
+  if (oauthConfigured) {
+    // OAuth is configured: Google Drive operations MUST use the storage-owner OAuth access token.
+    // If token acquisition fails, getGoogleDriveOAuthAccessToken throws a controlled error.
+    // We do NOT silently fall back to the service account or hide OAuth authentication failures.
+    const oauthAccessToken = await getGoogleDriveOAuthAccessToken(env!);
+    if (!oauthAccessToken) {
+      throw new BadGatewayError(
+        'Google Drive OAuth is configured but access token is unavailable. Please complete authorization.'
+      );
+    }
+    return {
+      accessToken: oauthAccessToken
+    };
+  }
+
+  // OAuth is not configured: existing service-account behavior remains temporarily available
+  if (serviceAccountJson && serviceAccountJson.trim()) {
+    return {
+      serviceAccountJson
+    };
+  }
+
+  throw new BadRequestError('Google Drive authentication is not configured.');
 }
 
 /**
@@ -311,6 +365,394 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }, firestoreStatus.connected ? 200 : 503);
   });
 
+  // ==========================================================
+  // ROUTE: POST & GET /api/oauth/google/init-setup (Admin Setup Initiation)
+  // Generates a short-lived single-use setup token for browser navigation.
+  // Requires X-Google-OAuth-Setup-Key header with the permanent secret.
+  // ==========================================================
+  const handleInitSetup = async (c: any) => {
+    const expectedSetupKey =
+      (c.env?.GOOGLE_OAUTH_SETUP_KEY as string) ||
+      (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_SETUP_KEY : undefined);
+
+    if (!expectedSetupKey || !expectedSetupKey.trim()) {
+      logger.error('OAuth setup rejected: GOOGLE_OAUTH_SETUP_KEY is not configured in Worker secrets.');
+      throw new AppError(
+        500,
+        'Server configuration error: GOOGLE_OAUTH_SETUP_KEY secret is missing.',
+        'SERVER_CONFIG_ERROR'
+      );
+    }
+
+    const providedKey =
+      c.req.header('x-google-oauth-setup-key') ||
+      c.req.header('X-Google-OAuth-Setup-Key');
+
+    if (!providedKey || !timingSafeEqual(providedKey.trim(), expectedSetupKey.trim())) {
+      logger.warn('Unauthorized attempt to access /api/oauth/google/init-setup with missing or invalid setup key.');
+      throw new UnauthorizedError('Unauthorized: Missing or invalid X-Google-OAuth-Setup-Key header.');
+    }
+
+    // Generate single-use signed setup session (expires in 10 minutes / 600s)
+    const session = await createSetupSession(expectedSetupKey.trim(), c.env?.GOOGLE_OAUTH_STATE, 600);
+    const reqUrl = new URL(c.req.url);
+    const setupUrl = `${reqUrl.origin}${session.setupUrlPath}`;
+
+    return c.json({
+      success: true,
+      setupUrl,
+      expiresInSeconds: session.expiresInSeconds,
+      message: 'Open setupUrl in your browser to authorize Google Drive. This one-time link expires in 10 minutes.'
+    }, 200);
+  };
+
+  app.post('/api/oauth/google/init-setup', handleInitSetup);
+  app.get('/api/oauth/google/init-setup', handleInitSetup);
+
+  // ==========================================================
+  // ROUTE: GET /api/oauth/google/start (Browser OAuth Initiation)
+  // Validates short-lived, single-use ?setup=<token> and redirects to Google consent screen.
+  // Does NOT require HTTP headers so it can be opened directly in standard web browsers.
+  // ==========================================================
+  app.get('/api/oauth/google/start', async (c) => {
+    const setupToken = c.req.query('setup');
+    const expectedSetupKey =
+      (c.env?.GOOGLE_OAUTH_SETUP_KEY as string) ||
+      (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_SETUP_KEY : undefined);
+
+    if (!expectedSetupKey || !expectedSetupKey.trim()) {
+      logger.error('OAuth setup rejected: GOOGLE_OAUTH_SETUP_KEY is not configured in Worker secrets.');
+      throw new AppError(
+        500,
+        'Server configuration error: GOOGLE_OAUTH_SETUP_KEY secret is missing.',
+        'SERVER_CONFIG_ERROR'
+      );
+    }
+
+    const failureHtml = (title: string, message: string) => `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title}</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    .card {
+      background: #ffffff;
+      padding: 2.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      max-width: 440px;
+      text-align: center;
+      border: 1px solid #e2e8f0;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      color: #dc2626;
+    }
+    p {
+      font-size: 0.95rem;
+      line-height: 1.5;
+      color: #475569;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>${title}</h1>
+    <p>${message}</p>
+  </div>
+</body>
+</html>`;
+
+    if (!setupToken || !setupToken.trim()) {
+      logger.warn('OAuth start rejected: missing setup token in query parameter.');
+      return c.html(
+        failureHtml(
+          'Setup Authorization Required',
+          'A valid, short-lived setup authorization token is required to start Google Drive authorization. Please generate a setup link via /api/oauth/google/init-setup.'
+        ),
+        401
+      );
+    }
+
+    // Validate and consume setup token (single-use, expires in ~10m)
+    const isValidSetup = await validateAndConsumeSetupToken(
+      setupToken.trim(),
+      expectedSetupKey.trim(),
+      c.env?.GOOGLE_OAUTH_STATE
+    );
+
+    if (!isValidSetup) {
+      logger.warn('OAuth start rejected: invalid, expired, or replayed setup token.');
+      return c.html(
+        failureHtml(
+          'Setup Authorization Failed',
+          'The setup authorization link is invalid, has expired, or has already been used. Please request a new setup link.'
+        ),
+        401
+      );
+    }
+
+    // Validate required OAuth credentials
+    const clientId =
+      (c.env?.GOOGLE_OAUTH_CLIENT_ID as string) ||
+      (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_CLIENT_ID : undefined);
+    const clientSecret =
+      (c.env?.GOOGLE_OAUTH_CLIENT_SECRET as string) ||
+      (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_CLIENT_SECRET : undefined);
+    const encryptionKey =
+      (c.env?.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY as string) ||
+      (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY : undefined);
+
+    if (!clientId || !clientId.trim()) {
+      throw new AppError(
+        500,
+        'Server configuration error: GOOGLE_OAUTH_CLIENT_ID secret is missing.',
+        'SERVER_CONFIG_ERROR'
+      );
+    }
+    if (!clientSecret || !clientSecret.trim()) {
+      throw new AppError(
+        500,
+        'Server configuration error: GOOGLE_OAUTH_CLIENT_SECRET secret is missing.',
+        'SERVER_CONFIG_ERROR'
+      );
+    }
+    if (!encryptionKey || !encryptionKey.trim()) {
+      throw new AppError(
+        500,
+        'Server configuration error: GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY secret is missing.',
+        'SERVER_CONFIG_ERROR'
+      );
+    }
+
+    // Generate cryptographically random OAuth state
+    const state = generateOAuthState();
+
+    // Store state in Cloudflare KV (expires in 10 minutes / 600s)
+    await storeOAuthState(state, c.env?.GOOGLE_OAUTH_STATE, 600);
+
+    // Construct Google OAuth authorization URL
+    const redirectUri = resolveOAuthRedirectUri(c.env);
+
+    const authUrl = buildGoogleOAuthUrl({
+      clientId,
+      redirectUri,
+      state
+    });
+
+    logger.info('OAuth flow initiated: redirecting administrator to Google authorization endpoint.');
+
+    // Redirect browser to Google's consent screen
+    return c.redirect(authUrl, 302);
+  });
+
+  // ==========================================================
+  // ROUTE: GET /api/oauth/google/callback (OAuth Callback)
+  // Handles Google's authorization callback, exchanges code for tokens,
+  // encrypts refresh token, stores it in Firestore oauth/googleDrive,
+  // and renders a clean HTML status page.
+  // ==========================================================
+  app.get('/api/oauth/google/callback', async (c) => {
+    const successHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Drive Authorization</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    .card {
+      background: #ffffff;
+      padding: 2.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      max-width: 440px;
+      text-align: center;
+      border: 1px solid #e2e8f0;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      color: #15803d;
+    }
+    p {
+      font-size: 0.95rem;
+      line-height: 1.5;
+      color: #475569;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Authorization Complete</h1>
+    <p>Google Drive authorization completed successfully.<br>You may close this window.</p>
+  </div>
+</body>
+</html>`;
+
+    const failureHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Google Drive Authorization Failed</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      margin: 0;
+      background-color: #f8fafc;
+      color: #0f172a;
+    }
+    .card {
+      background: #ffffff;
+      padding: 2.5rem;
+      border-radius: 12px;
+      box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+      max-width: 440px;
+      text-align: center;
+      border: 1px solid #e2e8f0;
+    }
+    h1 {
+      font-size: 1.35rem;
+      font-weight: 600;
+      margin-bottom: 0.75rem;
+      color: #dc2626;
+    }
+    p {
+      font-size: 0.95rem;
+      line-height: 1.5;
+      color: #475569;
+      margin: 0;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Authorization Failed</h1>
+    <p>Google Drive authorization failed.<br>Please contact the administrator.</p>
+  </div>
+</body>
+</html>`;
+
+    try {
+      const error = c.req.query('error');
+      if (error) {
+        logger.warn(`Google OAuth callback received error parameter: ${error}`);
+        return c.html(failureHtml, 400);
+      }
+
+      const code = c.req.query('code');
+      const state = c.req.query('state');
+
+      if (!code || !code.trim() || !state || !state.trim()) {
+        logger.warn('OAuth callback missing code or state.');
+        return c.html(failureHtml, 400);
+      }
+
+      // 1. Validate and immediately consume state from KV (prevents replay attacks)
+      const isValidState = await validateAndConsumeOAuthState(state.trim(), c.env?.GOOGLE_OAUTH_STATE);
+      if (!isValidState) {
+        logger.warn('OAuth callback rejected: Invalid or expired state parameter.');
+        return c.html(failureHtml, 400);
+      }
+
+      // 2. Load required OAuth configuration
+      const clientId =
+        (c.env?.GOOGLE_OAUTH_CLIENT_ID as string) ||
+        (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_CLIENT_ID : undefined);
+      const clientSecret =
+        (c.env?.GOOGLE_OAUTH_CLIENT_SECRET as string) ||
+        (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_CLIENT_SECRET : undefined);
+      const encryptionKey =
+        (c.env?.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY as string) ||
+        (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY : undefined);
+      const projectId =
+        (c.env?.FIREBASE_PROJECT_ID as string) ||
+        (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
+        'document-portal-d2b6d';
+      const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+      if (!clientId || !clientSecret || !encryptionKey || !serviceAccountJson) {
+        logger.error('OAuth callback missing server secrets configuration.');
+        return c.html(failureHtml, 500);
+      }
+
+      const redirectUri = resolveOAuthRedirectUri(c.env);
+
+      // 3. Exchange authorization code for tokens
+      const tokenResult = await exchangeAuthorizationCode({
+        clientId,
+        clientSecret,
+        code: code.trim(),
+        redirectUri
+      });
+
+      // 4. Encrypt refresh token using AES-256-GCM
+      const encryptedRefreshToken = await encryptRefreshToken(
+        tokenResult.refreshToken,
+        encryptionKey
+      );
+
+      // 5. Retrieve storage-owner account email safely (optional metadata)
+      const accountEmail = await getGoogleDriveAccountEmail(tokenResult.accessToken);
+
+      // 6. Store encrypted refresh token in dedicated Firestore document: oauth/googleDrive
+      await firestoreRestService.setDocument(
+        'oauth',
+        'googleDrive',
+        {
+          provider: 'google-drive',
+          accountEmail: accountEmail || null,
+          refreshTokenCiphertext: encryptedRefreshToken,
+          updatedAt: new Date().toISOString()
+        },
+        {
+          projectId,
+          serviceAccountJson
+        }
+      );
+
+      // 7. Clear in-memory token cache so fresh token will be used immediately
+      clearOAuthTokenCache();
+
+      logger.info(`Google Drive OAuth setup completed successfully for account: ${accountEmail || 'unknown'}`);
+
+      return c.html(successHtml, 200);
+    } catch (err) {
+      logger.error('Google OAuth callback failed:', err instanceof Error ? err.message : String(err));
+      return c.html(failureHtml, 400);
+    }
+  });
+
   // ==========================================
   // ROUTE 3: GET /api/profile (Protected)
   // ==========================================
@@ -378,13 +820,12 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     const cleanFolderId = driveFolderId.trim();
 
+    // Resolve Drive authorization options (prefers OAuth, falls back to service account)
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
     // Retrieve safe metadata and file list via Drive REST API
-    const folderMetadata = await googleDriveRestService.getDriveFolderMetadata(cleanFolderId, {
-      serviceAccountJson
-    });
-    const files = await googleDriveRestService.listFilesInFolder(cleanFolderId, {
-      serviceAccountJson
-    });
+    const folderMetadata = await googleDriveRestService.getDriveFolderMetadata(cleanFolderId, driveAuthOptions);
+    const files = await googleDriveRestService.listFilesInFolder(cleanFolderId, driveAuthOptions);
 
     logger.info(`Worker: Retrieved Drive folder '${folderMetadata.name}' and ${files.length} files for UID: ${uid}`);
 
@@ -430,15 +871,16 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     const authoritativePanFolderId = driveFolderId.trim();
 
+    // Resolve Drive authorization options (prefers OAuth, falls back to service account)
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
     // 1. List files directly inside authoritative PAN folder
-    const panFiles = await googleDriveRestService.listFilesInFolder(authoritativePanFolderId, {
-      serviceAccountJson
-    });
+    const panFiles = await googleDriveRestService.listFilesInFolder(authoritativePanFolderId, driveAuthOptions);
 
     // 2. Search for direct-child 'upload' subfolder
     const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
       authoritativePanFolderId,
-      { serviceAccountJson },
+      driveAuthOptions,
       false // Do NOT create folder during listing if missing
     );
 
@@ -446,9 +888,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     let uploadFiles: any[] = [];
     if (uploadFolderId) {
       try {
-        uploadFiles = await googleDriveRestService.listFilesInFolder(uploadFolderId, {
-          serviceAccountJson
-        });
+        uploadFiles = await googleDriveRestService.listFilesInFolder(uploadFolderId, driveAuthOptions);
       } catch (err) {
         logger.warn(`Failed to list upload folder for UID ${uid}, continuing with PAN files:`, err);
       }
@@ -528,12 +968,13 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     const authoritativeDriveFolderId = driveFolderId.trim();
 
+    // Resolve Drive authorization options (prefers OAuth, falls back to service account)
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
     // 1. Retrieve file metadata from Google Drive v3 REST API
     let fileMetadata;
     try {
-      fileMetadata = await googleDriveRestService.getFileMetadata(documentId, {
-        serviceAccountJson
-      });
+      fileMetadata = await googleDriveRestService.getFileMetadata(documentId, driveAuthOptions);
     } catch (err) {
       if (err instanceof NotFoundError) {
         throw new NotFoundError('Document not found or inaccessible.');
@@ -572,7 +1013,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       // Check if file is in client's direct-child upload folder
       const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
         authoritativeDriveFolderId,
-        { serviceAccountJson },
+        driveAuthOptions,
         false // Do NOT create folder during download check
       );
 
@@ -588,9 +1029,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     // 6. Retrieve file content stream from Google Drive using alt=media
-    const downloadResult = await googleDriveRestService.downloadFileStream(documentId, {
-      serviceAccountJson
-    });
+    const downloadResult = await googleDriveRestService.downloadFileStream(documentId, driveAuthOptions);
 
     if (!downloadResult.stream) {
       throw new BadGatewayError('Unable to retrieve file stream from Google Drive.');
@@ -654,15 +1093,16 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     const authoritativeDriveFolderId = driveFolderId.trim();
 
+    // Resolve Drive authorization options (prefers OAuth, falls back to service account)
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
     // 2. Ensure target authoritative PAN Drive folder exists and is usable
-    await googleDriveRestService.getDriveFolderMetadata(authoritativeDriveFolderId, {
-      serviceAccountJson
-    });
+    await googleDriveRestService.getDriveFolderMetadata(authoritativeDriveFolderId, driveAuthOptions);
 
     // 3. Resolve or create direct-child 'upload' subfolder under authoritative PAN folder
     const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
       authoritativeDriveFolderId,
-      { serviceAccountJson },
+      driveAuthOptions,
       true // Create if missing
     );
 
@@ -709,9 +1149,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         parents: [uploadFolderId],
         content: validatedFile.buffer
       },
-      {
-        serviceAccountJson
-      }
+      driveAuthOptions
     );
 
     logger.info(

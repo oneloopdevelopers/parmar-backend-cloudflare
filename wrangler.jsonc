@@ -9,5 +9,11 @@
   "vars": {
     "FIREBASE_PROJECT_ID": "document-portal-d2b6d",
     "NODE_ENV": "production"
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "GOOGLE_OAUTH_STATE",
+      "id": "<CONFIGURE_KV_NAMESPACE_ID_IN_CLOUDFLARE>"
+    }
+  ]
 }

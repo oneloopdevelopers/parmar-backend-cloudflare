@@ -516,6 +516,10 @@ async function runWorkerEndpointsTests() {
             ? 'image/jpeg'
             : uploadedName.endsWith('.png')
             ? 'image/png'
+            : uploadedName.endsWith('.xls')
+            ? 'application/vnd.ms-excel'
+            : uploadedName.endsWith('.xlsx')
+            ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
             : 'application/pdf',
           size: '2048',
           createdTime: '2026-09-13T12:00:00Z'
@@ -991,6 +995,46 @@ async function runWorkerEndpointsTests() {
         assert.strictEqual(json.success, true);
         assert.strictEqual(json.data.document.mimeType, 'image/png');
         console.log('✓ Test 9C Passed: Successful PNG document upload returns 200');
+      }
+
+      // 9C2. Successful XLS upload -> 200
+      {
+        const validXlsBytes = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00, 0x00]);
+        const fd = new FormData();
+        fd.append('file', new File([validXlsBytes], 'Audit_Report.xls', { type: 'application/vnd.ms-excel' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.data.document.mimeType, 'application/vnd.ms-excel');
+        console.log('✓ Test 9C2 Passed: Successful XLS document upload returns 200');
+      }
+
+      // 9C3. Successful XLSX upload -> 200
+      {
+        const validXlsxBytes = new Uint8Array([
+          0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00,
+          ...new TextEncoder().encode('[Content_Types].xml'),
+          0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+        ]);
+        const fd = new FormData();
+        fd.append('file', new File([validXlsxBytes], 'Tax_Computation.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.data.document.mimeType, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        console.log('✓ Test 9C3 Passed: Successful XLSX document upload returns 200');
       }
 
       // 9D. Missing file -> 400
