@@ -1,5 +1,12 @@
 import { getGoogleAccessToken, GOOGLE_DRIVE_SCOPE } from './googleServiceAccountAuth';
-import { DriveFolderSafeMetadata, DriveFileSafeMetadata, DriveFileDetails, DriveFileDownloadResult } from '../types';
+import {
+  DriveFolderSafeMetadata,
+  DriveFileSafeMetadata,
+  DriveFileDetails,
+  DriveFileDownloadResult,
+  DriveFileUploadResult,
+  UploadFileParams
+} from '../types';
 import { BadRequestError, NotFoundError, BadGatewayError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
@@ -314,6 +321,117 @@ export class GoogleDriveRestService {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Error downloading Google Drive file stream via REST:', msg);
       throw new BadGatewayError(`Unable to download Google Drive document: ${msg}`);
+    }
+  }
+
+  /**
+   * Uploads a file using Google Drive v3 multipart upload.
+   * Places the file strictly into the specified authoritative parents folder.
+   * Returns safe metadata: id, name, mimeType, size, createdTime.
+   */
+  public async uploadFileMultipart(
+    params: UploadFileParams,
+    options: DriveRestOptions
+  ): Promise<DriveFileUploadResult> {
+    if (!params.name || typeof params.name !== 'string' || !params.name.trim()) {
+      throw new BadRequestError('A valid file name is required for upload.');
+    }
+    if (!params.mimeType || typeof params.mimeType !== 'string' || !params.mimeType.trim()) {
+      throw new BadRequestError('A valid MIME type is required for upload.');
+    }
+    if (!params.parents || !Array.isArray(params.parents) || params.parents.length === 0) {
+      throw new BadRequestError('A valid parent folder ID is required for upload.');
+    }
+    if (!params.content || !(params.content instanceof Uint8Array)) {
+      throw new BadRequestError('A valid file binary content is required for upload.');
+    }
+
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      scopes: GOOGLE_DRIVE_SCOPE,
+      customFetch: options.customFetch
+    });
+
+    const boundary = `boundary_${Date.now()}_${Math.random().toString(36).substring(2, 10)}`;
+    const url = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&supportsAllDrives=true&fields=id,name,mimeType,size,createdTime';
+
+    const encoder = new TextEncoder();
+    const metadataPart = JSON.stringify({
+      name: params.name.trim(),
+      parents: params.parents
+    });
+
+    const headerChunk = encoder.encode(
+      `--${boundary}\r\n` +
+      `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
+      `${metadataPart}\r\n` +
+      `--${boundary}\r\n` +
+      `Content-Type: ${params.mimeType.trim()}\r\n\r\n`
+    );
+
+    const footerChunk = encoder.encode(`\r\n--${boundary}--\r\n`);
+
+    const totalLength = headerChunk.length + params.content.length + footerChunk.length;
+    const bodyBuffer = new Uint8Array(totalLength);
+    bodyBuffer.set(headerChunk, 0);
+    bodyBuffer.set(params.content, headerChunk.length);
+    bodyBuffer.set(footerChunk, headerChunk.length + params.content.length);
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': `multipart/related; boundary=${boundary}`,
+          'Accept': 'application/json'
+        },
+        body: bodyBuffer
+      });
+
+      if (response.status === 404) {
+        throw new NotFoundError(
+          'The target Google Drive folder was not found or has not been shared with the backend service account.'
+        );
+      }
+
+      if (response.status === 403) {
+        throw new BadGatewayError(
+          'Permission denied when uploading to Google Drive folder. Ensure the service account has editor access.'
+        );
+      }
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        logger.error(`Drive REST files.create uploadType=multipart failed with status ${response.status}:`, errorText);
+        throw new BadGatewayError(`Google Drive upload error: HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        id?: string;
+        name?: string;
+        mimeType?: string;
+        size?: string;
+        createdTime?: string;
+      };
+
+      if (!data || !data.id) {
+        throw new BadGatewayError('Invalid upstream response from Google Drive: missing file id.');
+      }
+
+      return {
+        id: data.id,
+        name: data.name || params.name.trim(),
+        mimeType: data.mimeType || params.mimeType.trim(),
+        size: data.size || String(params.content.length),
+        createdTime: data.createdTime || new Date().toISOString()
+      };
+    } catch (err) {
+      if (err instanceof BadRequestError || err instanceof NotFoundError || err instanceof BadGatewayError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Error uploading file to Google Drive via REST:', msg);
+      throw new BadGatewayError(`Unable to upload file to Google Drive: ${msg}`);
     }
   }
 }

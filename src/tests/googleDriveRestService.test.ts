@@ -237,6 +237,161 @@ async function runGoogleDriveRestServiceTests() {
     console.log('✓ Test 5 Passed: Successfully streams file content using alt=media');
   }
 
+  // Test 6: uploadFileMultipart successful upload
+  {
+    clearTokenCache();
+
+    let capturedRequestBody = '';
+    let capturedHeaders: Record<string, string> = {};
+
+    const mockFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-upload-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+        capturedHeaders = (init?.headers as Record<string, string>) || {};
+        if (init?.body instanceof Uint8Array) {
+          capturedRequestBody = new TextDecoder().decode(init.body);
+        }
+
+        return new Response(
+          JSON.stringify({
+            id: 'new-uploaded-file-id-999',
+            name: 'Form_16.pdf',
+            mimeType: 'application/pdf',
+            size: '1024',
+            createdTime: '2026-09-13T10:00:00.000Z'
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    const dummyPdfContent = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34]); // %PDF-1.4
+
+    const uploadRes = await service.uploadFileMultipart(
+      {
+        name: 'Form_16.pdf',
+        mimeType: 'application/pdf',
+        parents: ['authoritative-folder-456'],
+        content: dummyPdfContent
+      },
+      {
+        serviceAccountJson: testServiceAccountJson,
+        customFetch: mockFetch
+      }
+    );
+
+    assert.strictEqual(uploadRes.id, 'new-uploaded-file-id-999');
+    assert.strictEqual(uploadRes.name, 'Form_16.pdf');
+    assert.strictEqual(uploadRes.mimeType, 'application/pdf');
+    assert.strictEqual(uploadRes.size, '1024');
+    assert.ok(uploadRes.createdTime);
+
+    // Verify multipart request body contained metadata with authoritative parents
+    assert.ok(capturedRequestBody.includes('"parents":["authoritative-folder-456"]'));
+    assert.ok(capturedRequestBody.includes('"name":"Form_16.pdf"'));
+    assert.ok(capturedRequestBody.includes('Content-Type: application/pdf'));
+    assert.ok(capturedHeaders['Content-Type'].includes('multipart/related; boundary='));
+    assert.strictEqual(capturedHeaders['Authorization'], 'Bearer mock-upload-token');
+
+    console.log('✓ Test 6 Passed: Successfully uploads file using multipart REST API with authoritative parent');
+  }
+
+  // Test 7: uploadFileMultipart upstream failure handling (502 Bad Gateway)
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+        return new Response('Internal Google Drive Error', { status: 500 });
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    await assert.rejects(
+      async () => {
+        await service.uploadFileMultipart(
+          {
+            name: 'doc.pdf',
+            mimeType: 'application/pdf',
+            parents: ['folder-123'],
+            content: new Uint8Array([1, 2, 3])
+          },
+          {
+            serviceAccountJson: testServiceAccountJson,
+            customFetch: mockFetch
+          }
+        );
+      },
+      (err: any) => {
+        assert.strictEqual(err.statusCode, 502);
+        assert.ok(!err.message.includes('testServiceAccountJson'));
+        return true;
+      }
+    );
+    console.log('✓ Test 7 Passed: Maps Google Drive 500 error to safe 502 BadGatewayError');
+  }
+
+  // Test 8: uploadFileMultipart handles target folder not found (404)
+  {
+    clearTokenCache();
+
+    const mockFetch = (async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return new Response(
+          JSON.stringify({ access_token: 'mock-token', expires_in: 3600 }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+        return new Response('Target folder not found', { status: 404 });
+      }
+
+      return new Response('Not found', { status: 404 });
+    }) as any;
+
+    await assert.rejects(
+      async () => {
+        await service.uploadFileMultipart(
+          {
+            name: 'doc.pdf',
+            mimeType: 'application/pdf',
+            parents: ['non-existent-folder'],
+            content: new Uint8Array([1, 2, 3])
+          },
+          {
+            serviceAccountJson: testServiceAccountJson,
+            customFetch: mockFetch
+          }
+        );
+      },
+      (err: any) => {
+        assert.strictEqual(err.statusCode, 404);
+        return true;
+      }
+    );
+    console.log('✓ Test 8 Passed: Maps target folder missing to 404 NotFoundError');
+  }
+
   console.log('--- All Google Drive REST Service Tests Passed! ---\n');
 }
 

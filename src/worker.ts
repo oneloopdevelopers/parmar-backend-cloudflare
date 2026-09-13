@@ -6,6 +6,7 @@ import { maskPanNumber } from './utils/clientProfileUtils';
 import { verifyFirebaseIdToken } from './services/firebaseTokenVerifier';
 import { firestoreRestService } from './services/firestoreRestService';
 import { googleDriveRestService } from './services/googleDriveRestService';
+import { validateUploadedFile } from './utils/fileValidationUtils';
 import { logger } from './utils/logger';
 
 export interface WorkerVariables {
@@ -555,6 +556,112 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       status: 200,
       headers
     });
+  });
+
+  // ==========================================================
+  // ROUTE 7: POST /api/documents/upload (Protected)
+  // ==========================================================
+  app.post('/api/documents/upload', requireAuth, async (c) => {
+    const uid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    logger.info(`Worker: Processing POST /api/documents/upload for verified UID: ${uid}`);
+
+    // Verify Content-Type is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    if (!contentType.toLowerCase().includes('multipart/form-data')) {
+      throw new BadRequestError('Content-Type must be multipart/form-data for document upload.');
+    }
+
+    // 1. Authoritative Firestore Profile Resolution
+    const clientProfile = await firestoreRestService.getClientProfile(uid, {
+      projectId,
+      serviceAccountJson
+    });
+
+    if (clientProfile.status !== 'active') {
+      throw new ForbiddenError('User is inactive. Active status is required to upload documents.');
+    }
+
+    const driveFolderId = clientProfile.driveFolderId;
+    if (!driveFolderId || !driveFolderId.trim()) {
+      throw new BadRequestError('driveFolderId is missing from the authenticated user\'s Firestore profile.');
+    }
+
+    const authoritativeDriveFolderId = driveFolderId.trim();
+
+    // 2. Ensure target Drive folder exists and is usable
+    await googleDriveRestService.getDriveFolderMetadata(authoritativeDriveFolderId, {
+      serviceAccountJson
+    });
+
+    // 3. Parse Multipart Form Data
+    let formData: FormData;
+    try {
+      formData = await c.req.formData();
+    } catch (err) {
+      logger.error('Failed to parse multipart form data:', err);
+      throw new BadRequestError('Invalid multipart form data.');
+    }
+
+    // 4. Zero-Trust check on multipart fields:
+    // Reject any client-supplied identity or destination folder fields
+    for (const key of formData.keys()) {
+      const normalized = key.toLowerCase().replace(/[-_]/g, '');
+      if (FORBIDDEN_CLIENT_IDENTITY_KEYS.includes(normalized)) {
+        logger.warn(`Security violation: Client supplied forbidden field '${key}' in upload form data`);
+        throw new BadRequestError(
+          `Security violation: Field '${key}' cannot be supplied in multipart form data. Identity and destination folder associations are strictly authoritative.`
+        );
+      }
+    }
+
+    // 5. Extract and validate file field
+    const file = formData.get('file');
+    if (!file) {
+      throw new BadRequestError('Missing required multipart file field \'file\'.');
+    }
+
+    // Strict multi-layer file validation (size, MIME type, extension, signature, sanitization)
+    const validatedFile = await validateUploadedFile(file);
+
+    // 6. Upload directly to Google Drive into the client's authoritative folder
+    const uploadedDocument = await googleDriveRestService.uploadFileMultipart(
+      {
+        name: validatedFile.sanitizedFilename,
+        mimeType: validatedFile.mimeType,
+        parents: [authoritativeDriveFolderId],
+        content: validatedFile.buffer
+      },
+      {
+        serviceAccountJson
+      }
+    );
+
+    logger.info(
+      `Worker: Document uploaded successfully: ID ${uploadedDocument.id}, name '${uploadedDocument.name}' for UID: ${uid}`
+    );
+
+    // 7. Return safe metadata response
+    // Never expose driveFolderId, service account info, or UID
+    return c.json({
+      success: true,
+      message: 'Document uploaded successfully.',
+      data: {
+        document: {
+          id: uploadedDocument.id,
+          name: uploadedDocument.name,
+          mimeType: uploadedDocument.mimeType,
+          size: uploadedDocument.size || String(validatedFile.sizeBytes),
+          createdTime: uploadedDocument.createdTime || new Date().toISOString()
+        }
+      }
+    }, 200);
   });
 
   // Global Error Handler

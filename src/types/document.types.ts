@@ -52,3 +52,18 @@ export interface DriveFileDownloadResult {
   contentLength?: string;
   contentType?: string;
 }
+
+export interface DriveFileUploadResult {
+  id: string;
+  name: string;
+  mimeType: string;
+  size?: string;
+  createdTime?: string;
+}
+
+export interface UploadFileParams {
+  name: string;
+  mimeType: string;
+  parents: string[];
+  content: Uint8Array;
+}

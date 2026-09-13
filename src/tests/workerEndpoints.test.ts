@@ -59,7 +59,7 @@ async function runWorkerEndpointsTests() {
 
   // Setup mock global fetch for Google OAuth, Firestore REST, and Drive REST
   const originalFetch = globalThis.fetch;
-  globalThis.fetch = (async (input: RequestInfo | URL) => {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
 
     // 1. Google OAuth token endpoint
@@ -158,7 +158,7 @@ async function runWorkerEndpointsTests() {
     }
 
     // 4. Drive REST endpoint: File listing
-    if (url.includes('/drive/v3/files?')) {
+    if (url.includes('/drive/v3/files?') && !url.includes('/upload/')) {
       return new Response(
         JSON.stringify({
           files: [
@@ -311,6 +311,42 @@ async function runWorkerEndpointsTests() {
         status: 404,
         headers: { 'Content-Type': 'application/json' }
       });
+    }
+
+    // 7. Drive REST endpoint: File upload (uploadType=multipart)
+    if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+      let bodyText = '';
+      if (init?.body instanceof Uint8Array) {
+        bodyText = new TextDecoder().decode(init.body);
+      }
+      if (bodyText.includes('upstream-fail.pdf')) {
+        return new Response('Google Drive Upload Internal Error 500', {
+          status: 500,
+          headers: { 'Content-Type': 'text/plain' }
+        });
+      }
+
+      // Extract filename from multipart metadata if present
+      let uploadedName = 'uploaded_doc.pdf';
+      const nameMatch = bodyText.match(/"name":"([^"]+)"/);
+      if (nameMatch) {
+        uploadedName = nameMatch[1];
+      }
+
+      return new Response(
+        JSON.stringify({
+          id: 'uploaded-doc-id-789',
+          name: uploadedName,
+          mimeType: uploadedName.endsWith('.jpg') || uploadedName.endsWith('.jpeg')
+            ? 'image/jpeg'
+            : uploadedName.endsWith('.png')
+            ? 'image/png'
+            : 'application/pdf',
+          size: '2048',
+          createdTime: '2026-09-13T12:00:00Z'
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
     return new Response('Not found', { status: 404 });
@@ -710,6 +746,480 @@ async function runWorkerEndpointsTests() {
         assert.strictEqual(json.error.code, 'BAD_GATEWAY');
         assert.ok(!JSON.stringify(json).includes('private_key'));
         console.log('✓ Test 8K Passed: Upstream failure returns 502 Bad Gateway without leaking secrets');
+      }
+    }
+
+    // ==========================================================
+    // TEST 9: POST /api/documents/upload (Protected)
+    // ==========================================================
+    {
+      const validPdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xc4, 0xe5, 0xf2, 0xe5]);
+      const validJpgBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46]);
+      const validPngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+
+      // 9A. Successful PDF upload -> 200
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'Income_Tax_Computation.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.message, 'Document uploaded successfully.');
+        assert.strictEqual(json.data.document.id, 'uploaded-doc-id-789');
+        assert.strictEqual(json.data.document.name, 'Income_Tax_Computation.pdf');
+        assert.strictEqual(json.data.document.mimeType, 'application/pdf');
+        // Verify no sensitive fields in response
+        assert.strictEqual(json.data.document.driveFolderId, undefined);
+        assert.strictEqual(json.data.driveFolderId, undefined);
+        assert.strictEqual(json.driveFolderId, undefined);
+        assert.strictEqual(json.uid, undefined);
+        assert.strictEqual(json.accessToken, undefined);
+        console.log('✓ Test 9A Passed: Successful PDF document upload returns 200 and safe metadata');
+      }
+
+      // 9B. Successful JPEG upload -> 200
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validJpgBytes], 'PAN_Card_Photo.jpg', { type: 'image/jpeg' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.data.document.mimeType, 'image/jpeg');
+        console.log('✓ Test 9B Passed: Successful JPEG document upload returns 200');
+      }
+
+      // 9C. Successful PNG upload -> 200
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPngBytes], 'Aadhaar_Scan.png', { type: 'image/png' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.data.document.mimeType, 'image/png');
+        console.log('✓ Test 9C Passed: Successful PNG document upload returns 200');
+      }
+
+      // 9D. Missing file -> 400
+      {
+        const fd = new FormData();
+        fd.append('notes', 'Upload without file');
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('file'));
+        console.log('✓ Test 9D Passed: Missing file field rejected with 400');
+      }
+
+      // 9E. Empty file (0 bytes) -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([], 'empty.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('empty'));
+        console.log('✓ Test 9E Passed: Empty (0-byte) file rejected with 400');
+      }
+
+      // 9F. Unsupported MIME type -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([new Uint8Array([0x50, 0x4b, 0x03, 0x04])], 'archive.zip', { type: 'application/zip' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Unsupported file type'));
+        console.log('✓ Test 9F Passed: Unsupported MIME type (ZIP) rejected with 400');
+      }
+
+      // 9G. Unsupported extension -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'malicious.apk', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('extension'));
+        console.log('✓ Test 9G Passed: Unsupported file extension rejected with 400');
+      }
+
+      // 9H. File larger than 15 MB -> 400
+      {
+        const chunk = new Uint8Array(1024 * 1024); // 1 MB buffer
+        const largeFile = new File(new Array(16).fill(chunk), 'large_doc.pdf', { type: 'application/pdf' });
+        const fd = new FormData();
+        fd.append('file', largeFile);
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('15 MB'));
+        console.log('✓ Test 9H Passed: File exceeding 15 MB rejected with 400');
+      }
+
+      // 9I. MIME/extension mismatch -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'mismatch.png', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('does not match declared MIME type'));
+        console.log('✓ Test 9I Passed: MIME/extension mismatch rejected with 400');
+      }
+
+      // 9J. Invalid file signature -> 400
+      {
+        const fakePdfBytes = new TextEncoder().encode('<html><body>Fake PDF Content</body></html>');
+        const fd = new FormData();
+        fd.append('file', new File([fakePdfBytes], 'fake.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('File content signature does not match'));
+        console.log('✓ Test 9J Passed: Invalid file signature (MIME spoofing) rejected with 400');
+      }
+
+      // 9K. Unauthenticated upload -> 401
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 401);
+        console.log('✓ Test 9K Passed: Unauthenticated upload rejected with 401');
+      }
+
+      // 9L. Invalid Firebase token -> 401
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer bad-token' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 401);
+        console.log('✓ Test 9L Passed: Invalid Firebase token rejected with 401');
+      }
+
+      // 9M. Inactive user -> 403
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-inactive-456' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 403);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'FORBIDDEN');
+        console.log('✓ Test 9M Passed: Inactive user profile rejected with 403');
+      }
+
+      // 9N. Missing Firestore profile -> 404
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-non-existent' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 404);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        console.log('✓ Test 9N Passed: Missing Firestore profile rejected with 404');
+      }
+
+      // 9O. Missing driveFolderId in profile -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-no-folder' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('driveFolderId'));
+        console.log('✓ Test 9O Passed: Missing driveFolderId in Firestore profile rejected with 400');
+      }
+
+      // 9P. Client supplies uid in query -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload?uid=attacker-uid', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9P Passed: Client supplied uid in query rejected with 400');
+      }
+
+      // 9Q. Client supplies PAN in header -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer token-active-123',
+            'X-Pan-Number': 'ABCDE1234F'
+          },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9Q Passed: Client supplied PAN in header rejected with 400');
+      }
+
+      // 9R. Client supplies driveFolderId in query -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload?driveFolderId=other-folder', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9R Passed: Client supplied driveFolderId in query rejected with 400');
+      }
+
+      // 9S. Client supplies clientId in header -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: {
+            Authorization: 'Bearer token-active-123',
+            'X-Client-Id': 'client-999'
+          },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9S Passed: Client supplied clientId in header rejected with 400');
+      }
+
+      // 9T. Client supplies destination folder in multipart form data -> 400
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        fd.append('driveFolderId', 'injected-folder-999');
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 400);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.ok(json.error.message.includes('Security violation'));
+        console.log('✓ Test 9T Passed: Client supplied driveFolderId in multipart form data rejected with 400');
+      }
+
+      // 9U. Google Drive upstream failure -> 502
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'upstream-fail.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 502);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, false);
+        assert.strictEqual(json.error.code, 'BAD_GATEWAY');
+        console.log('✓ Test 9U Passed: Google Drive upstream failure returns 502 Bad Gateway');
+      }
+
+      // 9V. Filename path traversal attempt is sanitized
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], '../../../../etc/passwd.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.ok(!json.data.document.name.includes('/'));
+        assert.ok(!json.data.document.name.includes('..'));
+        console.log('✓ Test 9V Passed: Filename path traversal sequence is safely sanitized');
+      }
+
+      // 9W. Filename CRLF/control-character attempt is sanitized
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'evil\r\nSet-Cookie: evil=1\r\nfilename.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.ok(!json.data.document.name.includes('\r'));
+        assert.ok(!json.data.document.name.includes('\n'));
+        console.log('✓ Test 9W Passed: Filename CRLF and control characters are safely stripped');
+      }
+
+      // 9X. Existing document with same filename is NOT overwritten (Drive permits duplicate names)
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'PAN_Card.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const json: any = await res.json();
+        assert.strictEqual(json.success, true);
+        assert.strictEqual(json.data.document.name, 'PAN_Card.pdf');
+        assert.ok(json.data.document.id);
+        console.log('✓ Test 9X Passed: Upload with existing filename succeeds without overwriting existing files');
+      }
+
+      // 9Y. Successful response does not contain driveFolderId
+      // 9Z. Successful response does not contain Firebase UID
+      // 9AA. Successful response does not contain credentials or access tokens
+      {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'audit_check.pdf', { type: 'application/pdf' }));
+        const req = new Request('http://localhost/api/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-active-123' },
+          body: fd
+        });
+        const res = await app.request(req, {}, workerEnv);
+        assert.strictEqual(res.status, 200);
+        const jsonText = await res.text();
+        assert.ok(!jsonText.includes('folder-active-123'), 'Must not leak driveFolderId');
+        assert.ok(!jsonText.includes('active-user-123'), 'Must not leak Firebase UID');
+        assert.ok(!jsonText.includes('private_key'), 'Must not leak private key');
+        assert.ok(!jsonText.includes('mock-google-access-token'), 'Must not leak access token');
+        console.log('✓ Tests 9Y, 9Z, 9AA Passed: Response contains zero leaked folder IDs, UIDs, or credentials');
+      }
+
+      // 9AB. Existing listing and download endpoints continue to pass all tests
+      {
+        const listReq = new Request('http://localhost/api/documents', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const listRes = await app.request(listReq, {}, workerEnv);
+        assert.strictEqual(listRes.status, 200);
+        const listJson: any = await listRes.json();
+        assert.strictEqual(listJson.success, true);
+        assert.ok(Array.isArray(listJson.documents));
+
+        const downloadReq = new Request('http://localhost/api/documents/doc-file-1/download', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        const downloadRes = await app.request(downloadReq, {}, workerEnv);
+        assert.strictEqual(downloadRes.status, 200);
+        assert.strictEqual(downloadRes.headers.get('Content-Type'), 'application/pdf');
+        console.log('✓ Test 9AB Passed: Existing listing and download endpoints continue to pass all tests');
       }
     }
 
