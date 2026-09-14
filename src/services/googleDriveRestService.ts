@@ -566,6 +566,157 @@ export class GoogleDriveRestService {
       throw new BadGatewayError(`Unable to resolve client upload folder: ${msg}`);
     }
   }
+
+  /**
+   * Creates a folder in Google Drive directly under an optional parent folder.
+   */
+  public async createFolder(
+    name: string,
+    options: DriveRestOptions,
+    parentId?: string
+  ): Promise<{ id: string; name: string; mimeType: string }> {
+    if (!name || !name.trim()) {
+      throw new BadRequestError('Folder name is required.');
+    }
+
+    const fetchImpl = options.customFetch || fetch;
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_WRITE_SCOPE);
+
+    const createUrl = 'https://www.googleapis.com/drive/v3/files?supportsAllDrives=true&fields=id,name,mimeType,parents';
+    const bodyPayload: Record<string, unknown> = {
+      name: name.trim(),
+      mimeType: 'application/vnd.google-apps.folder'
+    };
+    if (parentId && parentId.trim()) {
+      bodyPayload.parents = [parentId.trim()];
+    }
+
+    try {
+      const createRes = await fetchImpl(createUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json; charset=UTF-8',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify(bodyPayload)
+      });
+
+      if (!createRes.ok) {
+        const errText = await createRes.text();
+        logger.error(`Drive REST files.create folder '${name}' failed with status ${createRes.status}:`, errText);
+        throw new BadGatewayError(`Unable to create folder in Google Drive: HTTP ${createRes.status}`);
+      }
+
+      const createdData = (await createRes.json()) as { id?: string; name?: string; mimeType?: string };
+      if (!createdData || !createdData.id) {
+        throw new BadGatewayError('Google Drive created folder but did not return a valid folder ID.');
+      }
+
+      return {
+        id: createdData.id,
+        name: createdData.name || name.trim(),
+        mimeType: createdData.mimeType || 'application/vnd.google-apps.folder'
+      };
+    } catch (err) {
+      if (err instanceof BadRequestError || err instanceof NotFoundError || err instanceof BadGatewayError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Error creating folder '${name}':`, msg);
+      throw new BadGatewayError(`Unable to create Google Drive folder: ${msg}`);
+    }
+  }
+
+  /**
+   * Deletes (or permanently removes) a file or folder from Google Drive by fileId.
+   * Used for rollback if client provisioning fails midway.
+   */
+  public async deleteFile(
+    fileId: string,
+    options: DriveRestOptions
+  ): Promise<void> {
+    if (!fileId || !fileId.trim()) return;
+
+    const cleanFileId = encodeURIComponent(fileId.trim());
+    const fetchImpl = options.customFetch || fetch;
+
+    try {
+      const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_WRITE_SCOPE);
+      const url = `https://www.googleapis.com/drive/v3/files/${cleanFileId}?supportsAllDrives=true`;
+
+      const res = await fetchImpl(url, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!res.ok && res.status !== 404) {
+        const errText = await res.text();
+        logger.warn(`Drive REST deleteFile for ${fileId} returned status ${res.status}:`, errText);
+      } else {
+        logger.info(`Drive REST deleteFile succeeded / rolled back: ${fileId}`);
+      }
+    } catch (err) {
+      logger.error(`Failed to delete Drive file/folder ${fileId} during rollback:`, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Finds or creates the root 'Client Documents' folder in Google Drive.
+   * If rootFolderId option is explicitly provided, uses that.
+   * Otherwise searches for an existing non-trashed folder named 'Client Documents'.
+   * If not found, creates it.
+   */
+  public async getOrCreateClientDocumentsRoot(
+    options: DriveRestOptions,
+    rootFolderIdOverride?: string
+  ): Promise<string> {
+    if (rootFolderIdOverride && rootFolderIdOverride.trim()) {
+      return rootFolderIdOverride.trim();
+    }
+
+    const fetchImpl = options.customFetch || fetch;
+    const accessToken = await this.getAccessToken(options, GOOGLE_DRIVE_WRITE_SCOPE);
+
+    const query = "name = 'Client Documents' and mimeType = 'application/vnd.google-apps.folder' and trashed = false";
+    const urlParams = new URLSearchParams({
+      q: query,
+      fields: 'files(id, name, mimeType, trashed)',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+      pageSize: '10'
+    });
+
+    const url = `https://www.googleapis.com/drive/v3/files?${urlParams.toString()}`;
+
+    try {
+      const res = await fetchImpl(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (res.ok) {
+        const data = (await res.json()) as { files?: Array<{ id?: string }> };
+        if (data.files && data.files.length > 0 && data.files[0].id) {
+          return data.files[0].id;
+        }
+      }
+
+      // Create 'Client Documents' folder
+      const created = await this.createFolder('Client Documents', options);
+      return created.id;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error('Error in getOrCreateClientDocumentsRoot:', msg);
+      throw new BadGatewayError(`Unable to resolve Client Documents root folder: ${msg}`);
+    }
+  }
 }
 
 export const googleDriveRestService = new GoogleDriveRestService();

@@ -172,6 +172,118 @@ export class FirestoreRestService {
     }
   }
   /**
+   * Deletes a document from Firestore using the Google Cloud Firestore REST API v1.
+   * Path format: `{collection}/{docId}`
+   */
+  public async deleteDocument(
+    collection: string,
+    docId: string,
+    options: {
+      projectId: string;
+      serviceAccountJson: string;
+      customFetch?: typeof fetch;
+    }
+  ): Promise<void> {
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      customFetch: options.customFetch
+    });
+
+    const cleanDocId = encodeURIComponent(docId.trim());
+    const url = `https://firestore.googleapis.com/v1/projects/${options.projectId}/databases/(default)/documents/${collection}/${cleanDocId}`;
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok && response.status !== 404) {
+        const errorBody = await response.text();
+        logger.warn(`Firestore REST deleteDocument returned status ${response.status} for ${collection}/${docId}:`, errorBody);
+      }
+    } catch (err) {
+      logger.error(`Failed to delete document ${collection}/${docId} via Firestore REST:`, err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Lists documents in a Firestore collection using the Google Cloud Firestore REST API v1.
+   */
+  public async listDocuments(
+    collection: string,
+    options: {
+      projectId: string;
+      serviceAccountJson: string;
+      pageSize?: number;
+      pageToken?: string;
+      customFetch?: typeof fetch;
+    }
+  ): Promise<{ documents: Array<{ id: string; data: Record<string, unknown> }>; nextPageToken?: string }> {
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      customFetch: options.customFetch
+    });
+
+    const pageSize = options.pageSize || 100;
+    let url = `https://firestore.googleapis.com/v1/projects/${options.projectId}/databases/(default)/documents/${collection}?pageSize=${pageSize}`;
+    if (options.pageToken) {
+      url += `&pageToken=${encodeURIComponent(options.pageToken)}`;
+    }
+
+    try {
+      const response = await fetchImpl(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Accept': 'application/json'
+        }
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        logger.error(`Firestore REST listDocuments failed with status ${response.status} for collection ${collection}:`, errorBody);
+        throw new BadGatewayError(`Cloud Firestore REST list error: HTTP ${response.status}`);
+      }
+
+      const data = (await response.json()) as {
+        documents?: Array<{
+          name: string;
+          fields?: Record<string, FirestoreField>;
+          createTime?: string;
+          updateTime?: string;
+        }>;
+        nextPageToken?: string;
+      };
+
+      const results: Array<{ id: string; data: Record<string, unknown> }> = [];
+      for (const doc of data.documents || []) {
+        const parts = doc.name.split('/');
+        const id = decodeURIComponent(parts[parts.length - 1]);
+        const decoded = doc.fields ? decodeFirestoreFields(doc.fields) : {};
+        if (doc.createTime) decoded.createdAt = doc.createTime;
+        if (doc.updateTime) decoded.updatedAt = doc.updateTime;
+        results.push({ id, data: decoded });
+      }
+
+      return {
+        documents: results,
+        nextPageToken: data.nextPageToken
+      };
+    } catch (err) {
+      if (err instanceof BadRequestError || err instanceof NotFoundError || err instanceof BadGatewayError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Failed to list documents in ${collection} via Firestore REST:`, msg);
+      throw new BadGatewayError(`Failed to communicate with Cloud Firestore REST API: ${msg}`);
+    }
+  }
+
+  /**
    * Retrieves a document from Firestore using the Google Cloud Firestore REST API v1.
    * Path format: `users/{uid}`
    */

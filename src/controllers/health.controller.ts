@@ -34,7 +34,9 @@ export function getHealthStatus(req: Request, res: Response): Response {
       firebaseHealth: 'GET /api/health/firebase',
       profile: 'GET /api/profile (Protected - Requires Bearer <Firebase ID Token>)',
       documents: 'GET /api/documents (Protected - Requires Bearer <Firebase ID Token>)',
-      driveTest: 'GET /api/drive/test (Protected - Requires Bearer <Firebase ID Token>)'
+      driveTest: 'GET /api/drive/test (Protected - Requires Bearer <Firebase ID Token>)',
+      adminClientsList: 'GET /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
+      adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)'
     }
   };
 

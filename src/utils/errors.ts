@@ -51,3 +51,9 @@ export class BadGatewayError extends AppError {
     super(502, message, 'BAD_GATEWAY', details);
   }
 }
+
+export class ConflictError extends AppError {
+  constructor(message = 'Resource conflict or duplicate entry', details?: ApiErrorDetail[]) {
+    super(409, message, 'CONFLICT', details);
+  }
+}

@@ -1,13 +1,15 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Env, ExecutionContext } from './types/worker.types';
-import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError, BadGatewayError } from './utils/errors';
+import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError, BadGatewayError, ConflictError } from './utils/errors';
 import { maskPanNumber } from './utils/clientProfileUtils';
 import { verifyFirebaseIdToken } from './services/firebaseTokenVerifier';
 import { firestoreRestService } from './services/firestoreRestService';
 import { googleDriveRestService, DriveRestOptions } from './services/googleDriveRestService';
 import { validateUploadedFile } from './utils/fileValidationUtils';
 import { logger } from './utils/logger';
+import { validateCreateClientInput } from './utils/adminValidation';
+import { adminClientService } from './services/adminClientService';
 import {
   generateOAuthState,
   storeOAuthState,
@@ -248,6 +250,65 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     await next();
   };
 
+  // Protected Admin Auth Middleware
+  // Verifies the Firebase ID token AND validates that the Firestore record users/{uid} has role === 'admin' and status === 'active'
+  const requireAdminAuth = async (c: any, next: () => Promise<void>) => {
+    const authHeader = c.req.header('authorization') || c.req.header('Authorization');
+    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+      throw new UnauthorizedError('Administrator authentication required. Provide a valid Bearer token.');
+    }
+
+    const token = authHeader.substring(7).trim();
+    if (!token) {
+      throw new UnauthorizedError('Administrator authentication required. Bearer token is empty.');
+    }
+
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    let verified;
+    try {
+      verified = await tokenVerifier(token, { projectId });
+    } catch (err) {
+      if (err instanceof UnauthorizedError) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new UnauthorizedError(`Invalid or rejected Firebase ID token: ${msg}`);
+    }
+
+    const uid = verified.uid;
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    // Authoritative verification of admin role from Firestore users/{uid}
+    const adminDoc = await firestoreRestService.getDocument('users', uid, {
+      projectId,
+      serviceAccountJson
+    });
+
+    if (!adminDoc) {
+      logger.warn(`Admin access denied: No Firestore profile exists for UID '${uid}'`);
+      throw new ForbiddenError('Access denied: Administrator profile not found.');
+    }
+
+    if (adminDoc.role !== 'admin') {
+      logger.warn(`Admin access denied: UID '${uid}' has role '${adminDoc.role}', expected 'admin'`);
+      throw new ForbiddenError('Access denied: Insufficient privileges. Administrator role required.');
+    }
+
+    if (adminDoc.status !== 'active') {
+      logger.warn(`Admin access denied: UID '${uid}' is inactive`);
+      throw new ForbiddenError('Access denied: Administrator account is inactive.');
+    }
+
+    c.set('verifiedUid', verified.uid);
+    c.set('verifiedEmail', verified.email);
+    c.set('tokenClaims', verified.claims);
+
+    await next();
+  };
+
   // ==========================================
   // ROUTE 1: GET /api/health (Public)
   // ==========================================
@@ -273,7 +334,10 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         profile: 'GET /api/profile (Protected - Requires Bearer <Firebase ID Token>)',
         documents: 'GET /api/documents (Protected - Requires Bearer <Firebase ID Token>)',
         documentDownload: 'GET /api/documents/:documentId/download (Protected - Requires Bearer <Firebase ID Token>)',
-        driveTest: 'GET /api/drive/test (Protected - Requires Bearer <Firebase ID Token>)'
+        documentUpload: 'POST /api/documents/upload (Protected - Requires Bearer <Firebase ID Token>)',
+        driveTest: 'GET /api/drive/test (Protected - Requires Bearer <Firebase ID Token>)',
+        adminClientsList: 'GET /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)'
       }
     };
 
@@ -1211,6 +1275,80 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         }
       }
     }, 200);
+  });
+
+  // ==========================================
+  // ROUTE 7: GET /api/admin/clients (Protected - Admin Only)
+  // Returns all registered client profiles.
+  // ==========================================
+  app.get('/api/admin/clients', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    logger.info(`Worker: Processing GET /api/admin/clients for admin UID: ${adminUid}`);
+
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+    const clients = await adminClientService.listClients({
+      projectId,
+      serviceAccountJson,
+      driveAuthOptions
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        clients,
+        total: clients.length
+      },
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // ==========================================
+  // ROUTE 8: POST /api/admin/clients (Protected - Admin Only)
+  // Provisions a new client: Auth user, Drive folders, Firestore profile, PAN index.
+  // ==========================================
+  app.post('/api/admin/clients', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new BadRequestError('Invalid JSON request body.');
+    }
+
+    // Strict validation of input and zero-trust prohibition of identity/role overrides
+    const validatedInput = validateCreateClientInput(body);
+
+    logger.info(`Worker: Processing POST /api/admin/clients for PAN: ${validatedInput.panNumber} by admin UID: ${adminUid}`);
+
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+    const result = await adminClientService.createClient(validatedInput, {
+      projectId,
+      serviceAccountJson,
+      driveAuthOptions
+    });
+
+    return c.json({
+      success: true,
+      message: 'Client provisioned successfully.',
+      data: {
+        client: result
+      },
+      timestamp: new Date().toISOString()
+    }, 201);
   });
 
   // Global Error Handler
