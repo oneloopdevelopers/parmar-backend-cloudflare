@@ -337,7 +337,9 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         documentUpload: 'POST /api/documents/upload (Protected - Requires Bearer <Firebase ID Token>)',
         driveTest: 'GET /api/drive/test (Protected - Requires Bearer <Firebase ID Token>)',
         adminClientsList: 'GET /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
-        adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)'
+        adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        adminClientDocumentsList: 'GET /api/admin/clients/:clientId/documents (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)'
       }
     };
 
@@ -1349,6 +1351,111 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       },
       timestamp: new Date().toISOString()
     }, 201);
+  });
+
+  // ==========================================
+  // ROUTE 9: GET /api/admin/clients/:clientId/documents (Protected - Admin Only)
+  // Returns complete document repository for selected client (PAN root files, upload folder, upload folder files)
+  // ==========================================
+  app.get('/api/admin/clients/:clientId/documents', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const rawClientId = c.req.param('clientId');
+
+    if (!rawClientId || typeof rawClientId !== 'string' || !rawClientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+
+    const clientId = rawClientId.trim();
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    logger.info(`Worker: Processing GET /api/admin/clients/${clientId}/documents by admin UID: ${adminUid}`);
+
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+    const repository = await adminClientService.getClientDocumentRepository(clientId, {
+      projectId,
+      serviceAccountJson,
+      driveAuthOptions
+    });
+
+    return c.json({
+      success: true,
+      data: repository,
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // ==========================================
+  // ROUTE 10: GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Admin Only)
+  // Streams file from selected client's authorized repository (PAN root OR upload folder)
+  // ==========================================
+  app.get('/api/admin/clients/:clientId/documents/:documentId/download', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const rawClientId = c.req.param('clientId');
+    const rawDocId = c.req.param('documentId');
+
+    if (!rawClientId || typeof rawClientId !== 'string' || !rawClientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+    if (!rawDocId || typeof rawDocId !== 'string' || !rawDocId.trim()) {
+      throw new BadRequestError('A valid Google Drive document ID is required.');
+    }
+
+    const clientId = rawClientId.trim();
+    const documentId = rawDocId.trim();
+
+    // Prevent path traversal, directory separators, null bytes, and malformed characters
+    if (!/^[a-zA-Z0-9_-]{5,100}$/.test(documentId)) {
+      throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
+    }
+
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    logger.info(`Worker: Processing admin download for client ${clientId}, doc ${documentId} by admin UID: ${adminUid}`);
+
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
+    // Verify document belongs to selected client's repository (PAN folder or upload folder)
+    const { fileMetadata } = await adminClientService.verifyClientDocumentAccess(clientId, documentId, {
+      projectId,
+      serviceAccountJson,
+      driveAuthOptions
+    });
+
+    // Retrieve file content stream from Google Drive using alt=media
+    const downloadResult = await googleDriveRestService.downloadFileStream(documentId, driveAuthOptions);
+
+    if (!downloadResult.stream) {
+      throw new BadGatewayError('Unable to retrieve file stream from Google Drive.');
+    }
+
+    // Sanitize filename and prepare safe response headers
+    const { contentDisposition } = sanitizeFilename(fileMetadata.name, `document_${documentId}.bin`);
+
+    const headers = new Headers();
+    headers.set('Content-Type', fileMetadata.mimeType || 'application/octet-stream');
+    headers.set('Content-Disposition', contentDisposition);
+    headers.set('X-Content-Type-Options', 'nosniff');
+    headers.set('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+
+    const contentLength = fileMetadata.size || downloadResult.contentLength;
+    if (contentLength && /^\d+$/.test(contentLength)) {
+      headers.set('Content-Length', contentLength);
+    }
+
+    return new Response(downloadResult.stream, {
+      status: 200,
+      headers
+    });
   });
 
   // Global Error Handler

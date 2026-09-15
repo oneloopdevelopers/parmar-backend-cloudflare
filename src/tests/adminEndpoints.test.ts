@@ -93,6 +93,30 @@ export async function runAdminEndpointsTests() {
     createdAt: new Date().toISOString()
   });
 
+  // Seed inactive client
+  memoryUsers.set('client-inactive-1', {
+    name: 'Inactive Client',
+    email: 'inactive.client@example.com',
+    phone: '+919876543219',
+    panNumber: 'INACT1234A',
+    driveFolderId: 'folder-inact-client',
+    role: 'client',
+    status: 'inactive',
+    createdAt: new Date().toISOString()
+  });
+
+  // Seed client with missing driveFolderId
+  memoryUsers.set('client-missing-folder', {
+    name: 'No Folder Client',
+    email: 'nofolder@example.com',
+    phone: '+919876543218',
+    panNumber: 'NOFLD1234A',
+    driveFolderId: '',
+    role: 'client',
+    status: 'active',
+    createdAt: new Date().toISOString()
+  });
+
   // Seed existing PAN in panIndex
   memoryPanIndex.set('EXIST1234E', {
     panNumber: 'EXIST1234E',
@@ -254,6 +278,178 @@ export async function runAdminEndpointsTests() {
         JSON.stringify({ id: folderId, name: body.name, mimeType: body.mimeType, parents: body.parents }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Drive search 'upload' subfolder
+    if (url.includes('/drive/v3/files?') && (url.includes("name = 'upload'") || url.includes("name+%3D+%27upload%27") || url.includes("name%3D%27upload%27"))) {
+      if (url.includes('folder-reg-client')) {
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'upload-folder-reg-client',
+                name: 'upload',
+                mimeType: 'application/vnd.google-apps.folder',
+                trashed: false,
+                parents: ['folder-reg-client']
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ files: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Drive list files in folder
+    if (url.includes('/drive/v3/files?') && !url.includes('/upload/') && !url.includes('Client Documents') && !url.includes('Client+Documents')) {
+      const decodedUrl = decodeURIComponent(url);
+      if (decodedUrl.includes('upload-folder-reg-client')) {
+        // Files inside upload subfolder
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'doc-upload-subfolder-1',
+                name: 'Client_Submitted.pdf',
+                mimeType: 'application/pdf',
+                size: '102400',
+                createdTime: '2026-09-05T12:00:00Z',
+                modifiedTime: '2026-09-05T12:00:00Z',
+                parents: ['upload-folder-reg-client'],
+                trashed: false
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      if (decodedUrl.includes('folder-reg-client')) {
+        // Files directly in PAN folder (pan_root)
+        return new Response(
+          JSON.stringify({
+            files: [
+              {
+                id: 'doc-pan-root-1',
+                name: 'PAN_Statement.pdf',
+                mimeType: 'application/pdf',
+                size: '204800',
+                createdTime: '2026-09-01T10:00:00Z',
+                modifiedTime: '2026-09-01T10:00:00Z',
+                parents: ['folder-reg-client'],
+                trashed: false
+              },
+              {
+                id: 'doc-shortcut-1',
+                name: 'Ignored_Shortcut',
+                mimeType: 'application/vnd.google-apps.shortcut',
+                size: '0',
+                createdTime: '2026-09-01T10:00:00Z',
+                modifiedTime: '2026-09-01T10:00:00Z',
+                parents: ['folder-reg-client'],
+                trashed: false
+              }
+            ]
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+
+      return new Response(JSON.stringify({ files: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    }
+
+    // Drive download file stream (alt=media)
+    if (url.includes('/drive/v3/files/') && url.includes('alt=media')) {
+      if (url.includes('doc-pan-root-1')) {
+        return new Response('Mock Binary Content of PAN_Statement.pdf', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Length': '34'
+          }
+        });
+      }
+      if (url.includes('doc-upload-subfolder-1')) {
+        return new Response('Mock Binary Content of Client_Submitted.pdf', {
+          status: 200,
+          headers: {
+            'Content-Type': 'application/pdf',
+            'Content-Length': '36'
+          }
+        });
+      }
+      return new Response('Not found', { status: 404 });
+    }
+
+    // Drive get file metadata (fields=...)
+    if (url.includes('/drive/v3/files/') && url.includes('fields=')) {
+      if (url.includes('/drive/v3/files/doc-pan-root-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-pan-root-1',
+            name: 'PAN_Statement.pdf',
+            mimeType: 'application/pdf',
+            size: '204800',
+            parents: ['folder-reg-client'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-upload-subfolder-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-upload-subfolder-1',
+            name: 'Client_Submitted.pdf',
+            mimeType: 'application/pdf',
+            size: '102400',
+            parents: ['upload-folder-reg-client'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-other-client-file?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-other-client-file',
+            name: 'Alien_Secret.pdf',
+            mimeType: 'application/pdf',
+            size: '50000',
+            parents: ['foreign-client-folder-999'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-trashed-file?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-trashed-file',
+            name: 'Deleted.pdf',
+            mimeType: 'application/pdf',
+            size: '1000',
+            parents: ['folder-reg-client'],
+            trashed: true
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-folder-as-file?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-folder-as-file',
+            name: 'Subfolder',
+            mimeType: 'application/vnd.google-apps.folder',
+            size: '0',
+            parents: ['folder-reg-client'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response(JSON.stringify({ error: { code: 404, message: 'File not found' } }), { status: 404 });
     }
 
     return new Response(JSON.stringify({ error: 'Not handled' }), { status: 404 });
@@ -597,7 +793,213 @@ export async function runAdminEndpointsTests() {
 
     console.log('✓ Test 8 Passed: Client role/identity override strictly forbidden');
 
-    console.log('\n--- All STEP 26A Admin Client Provisioning Tests Passed Successfully! ---\n');
+    // =========================================================================
+    // STEP 26D: ADMIN CLIENT DOCUMENT REPOSITORY & DOWNLOAD API TESTS (9-17)
+    // =========================================================================
+
+    // ==========================================
+    // TEST 9: List Documents - Unauthenticated / Missing Bearer Token (401)
+    // ==========================================
+    console.log('Test 9: Admin Documents List - Unauthenticated (401)');
+    const resListUnauth = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents', {
+        method: 'GET'
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resListUnauth.status, 401);
+    console.log('✓ Test 9 Passed: 401 Unauthorized for missing admin token');
+
+    // ==========================================
+    // TEST 10: List Documents - Non-Admin Access Denied (403)
+    // ==========================================
+    console.log('Test 10: Admin Documents List - Non-Admin Access Denied (403)');
+    const resListNonAdmin = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-client-nonadmin' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resListNonAdmin.status, 403);
+    console.log('✓ Test 10 Passed: 403 Forbidden for non-admin client token');
+
+    // ==========================================
+    // TEST 11: List Documents - Inactive Admin Access Denied (403)
+    // ==========================================
+    console.log('Test 11: Admin Documents List - Inactive Admin Access Denied (403)');
+    const resListInactiveAdmin = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-inactive' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resListInactiveAdmin.status, 403);
+    console.log('✓ Test 11 Passed: 403 Forbidden for inactive admin');
+
+    // ==========================================
+    // TEST 12: List Documents - Non-Existent Client UID (404)
+    // ==========================================
+    console.log('Test 12: Admin Documents List - Non-Existent Client UID (404)');
+    const resListUnknownClient = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/ghost-client-999/documents', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resListUnknownClient.status, 404);
+    console.log('✓ Test 12 Passed: 404 Not Found for non-existent client UID');
+
+    // ==========================================
+    // TEST 13: List Documents - Inactive Client (403 Forbidden)
+    // ==========================================
+    console.log('Test 13: Admin Documents List - Inactive Client (403)');
+    const resListInactiveClient = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-inactive-1/documents', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resListInactiveClient.status, 403);
+    console.log('✓ Test 13 Passed: 403 Forbidden when client account is inactive');
+
+    // ==========================================
+    // TEST 14: List Documents - Client Missing Google Drive Folder (400 Bad Request)
+    // ==========================================
+    console.log('Test 14: Admin Documents List - Missing Drive Folder (400)');
+    const resListNoFolder = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-missing-folder/documents', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resListNoFolder.status, 400);
+    console.log('✓ Test 14 Passed: 400 Bad Request when client has no driveFolderId configured');
+
+    // ==========================================
+    // TEST 15: List Documents - Successful Complete Repository Listing (200 OK)
+    // ==========================================
+    console.log('Test 15: Admin Documents List - Complete Repository Listing (200)');
+    const resListSuccess = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resListSuccess.status, 200);
+    const listBody: any = await resListSuccess.json();
+    assert.strictEqual(listBody.success, true);
+    assert.strictEqual(listBody.data.clientId, 'client-user-1');
+    assert.strictEqual(listBody.data.panFolderId, 'folder-reg-client');
+    assert.ok(listBody.data.uploadFolder);
+    assert.strictEqual(listBody.data.uploadFolder.id, 'upload-folder-reg-client');
+    assert.strictEqual(listBody.data.uploadFolder.name, 'upload');
+
+    // Check documents: Should include PAN root file and upload folder file, filtering out shortcuts
+    const docs = listBody.data.documents;
+    assert.strictEqual(docs.length, 2);
+
+    const panRootDoc = docs.find((d: any) => d.documentId === 'doc-pan-root-1');
+    assert.ok(panRootDoc, 'PAN root file must be present');
+    assert.strictEqual(panRootDoc.folderType, 'pan_root');
+    assert.strictEqual(panRootDoc.uploaderType, 'administrator');
+    assert.strictEqual(panRootDoc.uploaderName, 'Administrator');
+    assert.strictEqual(panRootDoc.name, 'PAN_Statement.pdf');
+
+    const uploadSubfolderDoc = docs.find((d: any) => d.documentId === 'doc-upload-subfolder-1');
+    assert.ok(uploadSubfolderDoc, 'Upload subfolder file must be present');
+    assert.strictEqual(uploadSubfolderDoc.folderType, 'upload_folder');
+    assert.strictEqual(uploadSubfolderDoc.uploaderType, 'client');
+    assert.strictEqual(uploadSubfolderDoc.uploaderName, 'Regular Client');
+    assert.strictEqual(uploadSubfolderDoc.name, 'Client_Submitted.pdf');
+
+    console.log('✓ Test 15 Passed: Complete repository correctly listed with PAN root and upload files');
+
+    // ==========================================
+    // TEST 16: Admin Document Download - Authorized PAN Root and Upload Files (200 OK)
+    // ==========================================
+    console.log('Test 16: Admin Document Download - Authorized Files (200)');
+    // Download PAN root file
+    const resDownloadPanRoot = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-pan-root-1/download', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resDownloadPanRoot.status, 200);
+    assert.strictEqual(resDownloadPanRoot.headers.get('Content-Type'), 'application/pdf');
+    assert.ok(resDownloadPanRoot.headers.get('Content-Disposition')?.includes('PAN_Statement.pdf'));
+    const panRootText = await resDownloadPanRoot.text();
+    assert.strictEqual(panRootText, 'Mock Binary Content of PAN_Statement.pdf');
+
+    // Download upload subfolder file
+    const resDownloadUploadSub = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-upload-subfolder-1/download', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resDownloadUploadSub.status, 200);
+    assert.strictEqual(resDownloadUploadSub.headers.get('Content-Type'), 'application/pdf');
+    assert.ok(resDownloadUploadSub.headers.get('Content-Disposition')?.includes('Client_Submitted.pdf'));
+    const uploadSubText = await resDownloadUploadSub.text();
+    assert.strictEqual(uploadSubText, 'Mock Binary Content of Client_Submitted.pdf');
+    console.log('✓ Test 16 Passed: Successful download of both PAN root and upload subfolder documents');
+
+    // ==========================================
+    // TEST 17: Admin Document Download - Strict IDOR Prevention & Traversal Defense
+    // ==========================================
+    console.log('Test 17: Admin Document Download - IDOR Prevention & Input Validation');
+    // 17A: Cross-client file access attempt (file belongs to a different client) -> must 404
+    const resCrossClient = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-other-client-file/download', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resCrossClient.status, 404, 'Cross-client file must be rejected with 404');
+
+    // 17B: Trashed file attempt -> must 404
+    const resTrashed = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-trashed-file/download', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resTrashed.status, 404, 'Trashed file must be rejected with 404');
+
+    // 17C: Attempt to download a folder as a file -> must 404
+    const resFolderDownload = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-folder-as-file/download', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resFolderDownload.status, 404, 'Folder download must be rejected with 404');
+
+    // 17D: Malformed document ID / Path traversal attempt -> must 400
+    const resTraversal = await app.fetch(
+      new Request('https://worker.local/api/admin/clients/client-user-1/documents/..%2F..%2Fsecret/download', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-admin-valid' }
+      }),
+      workerEnv
+    );
+    assert.strictEqual(resTraversal.status, 400, 'Path traversal documentId must be rejected with 400');
+
+    console.log('✓ Test 17 Passed: Strict IDOR defense, trashed rejection, and input validation verified');
+
+    console.log('\n--- All STEP 26A & 26D Admin Client and Document API Tests Passed Successfully! ---\n');
   } finally {
     globalThis.fetch = originalFetch;
     clearTokenCache();

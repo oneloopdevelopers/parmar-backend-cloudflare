@@ -2,8 +2,21 @@ import { firestoreRestService } from './firestoreRestService';
 import { googleDriveRestService, DriveRestOptions } from './googleDriveRestService';
 import { firebaseAuthRestService } from './firebaseAuthRestService';
 import { ValidatedClientInput } from '../utils/adminValidation';
-import { AdminClientItem, CreateClientResponse } from '../types/admin.types';
-import { ConflictError, BadGatewayError } from '../utils/errors';
+import {
+  AdminClientItem,
+  CreateClientResponse,
+  AdminClientDocumentItem,
+  AdminClientUploadFolderInfo,
+  AdminClientDocumentsResponse
+} from '../types/admin.types';
+import { DriveFileDetails } from '../types';
+import {
+  BadRequestError,
+  ConflictError,
+  NotFoundError,
+  ForbiddenError,
+  BadGatewayError
+} from '../utils/errors';
 import { logger } from '../utils/logger';
 
 export interface AdminClientServiceContext {
@@ -281,6 +294,250 @@ export class AdminClientService {
 
       throw err;
     }
+  }
+
+  /**
+   * Helper: Validates that the target clientId exists in Firestore, has role === 'client',
+   * is active, and possesses an authoritative driveFolderId.
+   */
+  public async getAuthoritativeClientProfile(
+    clientId: string,
+    ctx: AdminClientServiceContext
+  ): Promise<{ clientUid: string; clientName: string; panNumber: string; driveFolderId: string }> {
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      throw new BadRequestError('A valid client UID is required.');
+    }
+
+    const cleanClientId = clientId.trim();
+
+    const userDoc = await firestoreRestService.getDocument('users', cleanClientId, {
+      projectId: ctx.projectId,
+      serviceAccountJson: ctx.serviceAccountJson,
+      customFetch: ctx.customFetch
+    });
+
+    if (!userDoc) {
+      logger.warn(`AdminClientService: Client profile not found for UID '${cleanClientId}'`);
+      throw new NotFoundError(`Client with UID '${cleanClientId}' not found.`);
+    }
+
+    // Role check: Target must be a client (reject admin profiles)
+    if (userDoc.role !== 'client') {
+      logger.warn(`AdminClientService: User '${cleanClientId}' has non-client role '${userDoc.role}'`);
+      throw new BadRequestError(`Target user '${cleanClientId}' is not a client.`);
+    }
+
+    // Status check: Client must be active
+    if (userDoc.status !== 'active') {
+      logger.warn(`AdminClientService: Client '${cleanClientId}' is not active (status: '${userDoc.status}')`);
+      throw new ForbiddenError(`Client '${cleanClientId}' is inactive.`);
+    }
+
+    const driveFolderId = userDoc.driveFolderId;
+    if (!driveFolderId || typeof driveFolderId !== 'string' || !driveFolderId.trim()) {
+      logger.warn(`AdminClientService: Client '${cleanClientId}' does not have a configured driveFolderId`);
+      throw new BadRequestError(`Client '${cleanClientId}' does not have an associated Google Drive folder.`);
+    }
+
+    const clientName = typeof userDoc.name === 'string' && userDoc.name.trim() ? userDoc.name.trim() : 'Client';
+    const panNumber = typeof userDoc.panNumber === 'string' ? userDoc.panNumber.trim().toUpperCase() : '';
+
+    return {
+      clientUid: cleanClientId,
+      clientName,
+      panNumber,
+      driveFolderId: driveFolderId.trim()
+    };
+  }
+
+  /**
+   * Lists the complete document repository for the selected client:
+   * 1. Files directly inside the authoritative PAN folder (folderType: 'pan_root', uploaderType: 'administrator')
+   * 2. The direct-child 'upload' folder itself (safe metadata)
+   * 3. Files directly inside the 'upload' subfolder (folderType: 'upload_folder', uploaderType: 'client')
+   */
+  public async getClientDocumentRepository(
+    clientId: string,
+    ctx: AdminClientServiceContext
+  ): Promise<AdminClientDocumentsResponse> {
+    const client = await this.getAuthoritativeClientProfile(clientId, ctx);
+    const panFolderId = client.driveFolderId;
+
+    logger.info(`AdminClientService: Listing document repository for client UID ${client.clientUid} (PAN folder: ${panFolderId})`);
+
+    // 1. List files directly inside the PAN folder
+    const panFiles = await googleDriveRestService.listFilesInFolder(panFolderId, ctx.driveAuthOptions);
+
+    // 2. Search for direct-child 'upload' folder (do NOT create if missing during list)
+    const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
+      panFolderId,
+      ctx.driveAuthOptions,
+      false
+    );
+
+    let uploadFolderInfo: AdminClientUploadFolderInfo | null = null;
+    let uploadFiles: any[] = [];
+
+    if (uploadFolderId) {
+      uploadFolderInfo = {
+        id: uploadFolderId,
+        name: 'upload',
+        mimeType: 'application/vnd.google-apps.folder',
+        folderType: 'upload_folder'
+      };
+
+      try {
+        uploadFiles = await googleDriveRestService.listFilesInFolder(uploadFolderId, ctx.driveAuthOptions);
+      } catch (err) {
+        logger.warn(`AdminClientService: Failed to list upload folder for client ${clientId}:`, err);
+      }
+    }
+
+    const documents: AdminClientDocumentItem[] = [];
+    const seenIds = new Set<string>();
+
+    // Process files directly in PAN folder
+    for (const f of panFiles) {
+      if (!f || !f.id) continue;
+
+      // Skip shortcuts, Google Docs/Sheets internal types, and skip the 'upload' folder itself from files
+      if (
+        f.mimeType === 'application/vnd.google-apps.shortcut' ||
+        f.mimeType.startsWith('application/vnd.google-apps.')
+      ) {
+        // If it's a folder, do not treat as downloadable file
+        continue;
+      }
+
+      if (!seenIds.has(f.id)) {
+        seenIds.add(f.id);
+        documents.push({
+          documentId: f.id,
+          name: f.name || 'Untitled',
+          mimeType: f.mimeType || 'application/octet-stream',
+          size: f.size || '0',
+          createdTime: f.createdTime || '',
+          modifiedTime: f.modifiedTime || '',
+          folderType: 'pan_root',
+          uploaderType: 'administrator',
+          uploaderName: 'Administrator'
+        });
+      }
+    }
+
+    // Process files inside 'upload' folder
+    for (const f of uploadFiles) {
+      if (!f || !f.id) continue;
+
+      if (
+        f.mimeType === 'application/vnd.google-apps.folder' ||
+        f.mimeType === 'application/vnd.google-apps.shortcut' ||
+        f.mimeType.startsWith('application/vnd.google-apps.')
+      ) {
+        continue;
+      }
+
+      if (!seenIds.has(f.id)) {
+        seenIds.add(f.id);
+        documents.push({
+          documentId: f.id,
+          name: f.name || 'Untitled',
+          mimeType: f.mimeType || 'application/octet-stream',
+          size: f.size || '0',
+          createdTime: f.createdTime || '',
+          modifiedTime: f.modifiedTime || '',
+          folderType: 'upload_folder',
+          uploaderType: 'client',
+          uploaderName: client.clientName
+        });
+      }
+    }
+
+    return {
+      clientId: client.clientUid,
+      panFolderId,
+      uploadFolder: uploadFolderInfo,
+      documents,
+      total: documents.length
+    };
+  }
+
+  /**
+   * Verifies that the requested documentId belongs to the selected client's authorized repository.
+   * Returns the verified file metadata and folderType ('pan_root' or 'upload_folder').
+   * Throws NotFoundError if document is outside the client repository, trashed, shortcut, or folder.
+   */
+  public async verifyClientDocumentAccess(
+    clientId: string,
+    documentId: string,
+    ctx: AdminClientServiceContext
+  ): Promise<{ fileMetadata: DriveFileDetails; folderType: 'pan_root' | 'upload_folder' }> {
+    const client = await this.getAuthoritativeClientProfile(clientId, ctx);
+    const authoritativePanFolderId = client.driveFolderId;
+
+    // Retrieve file metadata from Google Drive
+    let fileMetadata: DriveFileDetails;
+    try {
+      fileMetadata = await googleDriveRestService.getFileMetadata(documentId, ctx.driveAuthOptions);
+    } catch (err) {
+      if (err instanceof NotFoundError) {
+        throw new NotFoundError('Document not found or inaccessible in the client repository.');
+      }
+      throw err;
+    }
+
+    // 1. Verify file ID match
+    if (fileMetadata.id !== documentId) {
+      throw new NotFoundError('Document not found or inaccessible in the client repository.');
+    }
+
+    // 2. Reject trashed files
+    if (fileMetadata.trashed) {
+      logger.warn(`AdminClientService: Document ${documentId} is trashed.`);
+      throw new NotFoundError('Document not found or inaccessible in the client repository.');
+    }
+
+    // 3. Reject folders, shortcuts, and Google internal types
+    if (
+      fileMetadata.mimeType === 'application/vnd.google-apps.folder' ||
+      fileMetadata.mimeType === 'application/vnd.google-apps.shortcut' ||
+      fileMetadata.mimeType.startsWith('application/vnd.google-apps.')
+    ) {
+      logger.warn(`AdminClientService: Unsupported mimeType '${fileMetadata.mimeType}' for document ${documentId}`);
+      throw new NotFoundError('Document not found or inaccessible in the client repository.');
+    }
+
+    // 4. Strict parent containment check
+    const parents = fileMetadata.parents || [];
+
+    // Check Case A: File is directly inside client's PAN folder
+    if (parents.includes(authoritativePanFolderId)) {
+      return {
+        fileMetadata,
+        folderType: 'pan_root'
+      };
+    }
+
+    // Check Case B: File is directly inside client's upload folder
+    const uploadFolderId = await googleDriveRestService.getClientUploadFolderId(
+      authoritativePanFolderId,
+      ctx.driveAuthOptions,
+      false
+    );
+
+    if (uploadFolderId && parents.includes(uploadFolderId)) {
+      return {
+        fileMetadata,
+        folderType: 'upload_folder'
+      };
+    }
+
+    // If file parents do not include PAN folder nor upload folder -> CROSS-CLIENT OR ARBITRARY DRIVE FILE
+    logger.warn(
+      `IDOR Prevention: File ${documentId} does not belong to client ${clientId} repository ` +
+      `(PAN: ${authoritativePanFolderId}, Upload: ${uploadFolderId || 'none'}, actual parents: ${JSON.stringify(parents)})`
+    );
+    throw new NotFoundError('Document not found or inaccessible in the client repository.');
   }
 }
 

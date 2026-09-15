@@ -33,3 +33,35 @@ export interface CreateClientResponse {
   createdAt: string;
   updatedAt: string;
 }
+
+export type AdminFolderType = 'pan_root' | 'upload_folder' | 'subfolder';
+export type AdminUploaderType = 'administrator' | 'client';
+
+export interface AdminClientDocumentItem {
+  documentId: string;
+  name: string;
+  mimeType: string;
+  size: string;
+  createdTime: string;
+  modifiedTime: string;
+  folderType: AdminFolderType;
+  uploaderType: AdminUploaderType;
+  uploaderName: string;
+  isFolder?: boolean;
+}
+
+export interface AdminClientUploadFolderInfo {
+  id: string;
+  name: string;
+  mimeType: string;
+  folderType: 'upload_folder';
+}
+
+export interface AdminClientDocumentsResponse {
+  clientId: string;
+  panFolderId: string;
+  uploadFolder: AdminClientUploadFolderInfo | null;
+  documents: AdminClientDocumentItem[];
+  total: number;
+}
+
