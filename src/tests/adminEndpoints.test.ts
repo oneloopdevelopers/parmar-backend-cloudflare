@@ -128,6 +128,8 @@ export async function runAdminEndpointsTests() {
   let nextFolderIdCounter = 100;
   let nextAuthIdCounter = 500;
   let failAtStep: 'none' | 'drive' | 'firestore' = 'none';
+  let lastAdminUploadParents: string[] = [];
+  let lastAdminUploadName = '';
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -267,7 +269,7 @@ export async function runAdminEndpointsTests() {
     }
 
     // Drive create folder
-    if (init?.method === 'POST' && url.includes('/drive/v3/files')) {
+    if (init?.method === 'POST' && url.includes('/drive/v3/files') && !url.includes('/upload/')) {
       if (failAtStep === 'drive') {
         return new Response(JSON.stringify({ error: { message: 'Drive quota exceeded' } }), { status: 500 });
       }
@@ -450,6 +452,46 @@ export async function runAdminEndpointsTests() {
         );
       }
       return new Response(JSON.stringify({ error: { code: 404, message: 'File not found' } }), { status: 404 });
+    }
+
+    // Drive REST endpoint: File upload (uploadType=multipart)
+    if (url.includes('/upload/drive/v3/files?uploadType=multipart')) {
+      let bodyText = '';
+      if (init?.body instanceof Uint8Array) {
+        bodyText = new TextDecoder().decode(init.body);
+      }
+      let uploadedName = 'uploaded_doc.pdf';
+      const nameMatch = bodyText.match(/"name":"([^"]+)"/);
+      if (nameMatch) {
+        uploadedName = nameMatch[1];
+      }
+      lastAdminUploadName = uploadedName;
+
+      const parentsMatch = bodyText.match(/"parents":\["([^"]+)"\]/);
+      if (parentsMatch) {
+        lastAdminUploadParents = [parentsMatch[1]];
+      } else {
+        lastAdminUploadParents = [];
+      }
+
+      return new Response(
+        JSON.stringify({
+          id: `uploaded-admin-doc-${nextFolderIdCounter++}`,
+          name: uploadedName,
+          mimeType: uploadedName.endsWith('.jpg') || uploadedName.endsWith('.jpeg')
+            ? 'image/jpeg'
+            : uploadedName.endsWith('.png')
+            ? 'image/png'
+            : uploadedName.endsWith('.xls')
+            ? 'application/vnd.ms-excel'
+            : uploadedName.endsWith('.xlsx')
+            ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            : 'application/pdf',
+          size: '2048',
+          createdTime: new Date().toISOString()
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
     }
 
     return new Response(JSON.stringify({ error: 'Not handled' }), { status: 404 });
@@ -998,6 +1040,465 @@ export async function runAdminEndpointsTests() {
     assert.strictEqual(resTraversal.status, 400, 'Path traversal documentId must be rejected with 400');
 
     console.log('✓ Test 17 Passed: Strict IDOR defense, trashed rejection, and input validation verified');
+
+    // =========================================================================
+    // ADMIN DOCUMENT UPLOAD TESTS: POST /api/admin/clients/:clientId/documents/upload
+    // =========================================================================
+    console.log('\n--- Starting Tests for Admin Document Upload Endpoint ---');
+
+    const validPdfBytes = new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34, 0x0a, 0x25, 0xc4, 0xe5, 0xf2, 0xe5]);
+    const validJpgBytes = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+    const validPngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+    const validXlsBytes = new Uint8Array([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00, 0x00]);
+    const validXlsxBytes = new Uint8Array([
+      0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x00, 0x08, 0x00,
+      ...new TextEncoder().encode('[Content_Types].xml'),
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+    ]);
+
+    // Req 1: Route is registered and reachable
+    {
+      const healthRes = await app.fetch(new Request('https://worker.local/api/health', { method: 'GET' }), workerEnv);
+      const healthJson: any = await healthRes.json();
+      assert.ok(healthJson.data.endpoints.adminClientDocumentUpload, 'Route must be registered in health endpoints');
+      console.log('✓ Req 1 Passed: Route is registered and registered in health catalog');
+    }
+
+    // Req 2 & 3: Unauthenticated & Missing Bearer token -> 401
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'admin_doc.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 401, 'Unauthenticated upload must be rejected with 401');
+      console.log('✓ Req 2 & 3 Passed: Missing/unauthenticated token rejected with 401');
+    }
+
+    // Req 4: Invalid Bearer token -> 401
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'admin_doc.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-malformed-invalid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 401, 'Invalid token must be rejected with 401');
+      console.log('✓ Req 4 Passed: Invalid Bearer token rejected with 401');
+    }
+
+    // Req 5 & 6: Authenticated client role / non-admin -> 403
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'admin_doc.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-client-nonadmin' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Client role must be forbidden from admin upload (403)');
+      console.log('✓ Req 5 & 6 Passed: Non-admin / client role rejected with 403');
+    }
+
+    // Req 7: Inactive administrator -> 403
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'admin_doc.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-inactive' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Inactive administrator must be rejected with 403');
+      console.log('✓ Req 7 Passed: Inactive administrator rejected with 403');
+    }
+
+    // Req 8: Nonexistent clientId -> 404
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'admin_doc.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/nonexistent-client-id/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Nonexistent clientId must return 404');
+      console.log('✓ Req 8 Passed: Nonexistent clientId returns 404');
+    }
+
+    // Req 9: Inactive client -> 403
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'admin_doc.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-inactive-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Inactive client must return 403');
+      console.log('✓ Req 9 Passed: Inactive client returns 403');
+    }
+
+    // Req 10: Target client missing driveFolderId fails safely -> 400
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'admin_doc.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-missing-folder/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Missing driveFolderId must return 400');
+      console.log('✓ Req 10 Passed: Target client missing driveFolderId fails safely (400)');
+    }
+
+    // Req 11: Missing file field in multipart form data -> 400
+    {
+      const fd = new FormData();
+      fd.append('description', 'Missing file');
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Missing file field must return 400');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, false);
+      console.log('✓ Req 11 Passed: Missing file field in multipart form data returns 400');
+    }
+
+    // Req 12: Empty file (0 bytes) returns 400
+    {
+      const fd = new FormData();
+      fd.append('file', new File([new Uint8Array(0)], 'empty.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Empty file must return 400');
+      console.log('✓ Req 12 Passed: Empty file (0 bytes) returns 400');
+    }
+
+    // Req 13: Supported PDF upload succeeds
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'Notice_Assessment.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'PDF upload must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.data.document.name, 'Notice_Assessment.pdf');
+      assert.strictEqual(json.data.document.mimeType, 'application/pdf');
+      console.log('✓ Req 13 Passed: Supported PDF upload succeeds');
+    }
+
+    // Req 14: Supported JPG upload succeeds
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validJpgBytes], 'Tax_Receipt.jpg', { type: 'image/jpeg' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'JPG upload must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.data.document.mimeType, 'image/jpeg');
+      console.log('✓ Req 14 Passed: Supported JPG upload succeeds');
+    }
+
+    // Req 15: Supported JPEG upload succeeds
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validJpgBytes], 'Form16_Challan.jpeg', { type: 'image/jpeg' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'JPEG upload must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.data.document.mimeType, 'image/jpeg');
+      console.log('✓ Req 15 Passed: Supported JPEG upload succeeds');
+    }
+
+    // Req 16: Supported PNG upload succeeds
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPngBytes], 'Digital_Signature.png', { type: 'image/png' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'PNG upload must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.data.document.mimeType, 'image/png');
+      console.log('✓ Req 16 Passed: Supported PNG upload succeeds');
+    }
+
+    // Req 17: Supported XLS upload succeeds
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validXlsBytes], 'Depreciation_Schedule.xls', { type: 'application/vnd.ms-excel' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'XLS upload must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.data.document.mimeType, 'application/vnd.ms-excel');
+      console.log('✓ Req 17 Passed: Supported XLS upload succeeds');
+    }
+
+    // Req 18: Supported XLSX upload succeeds
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validXlsxBytes], 'Tax_Audit_2026.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'XLSX upload must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.data.document.mimeType, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      console.log('✓ Req 18 Passed: Supported XLSX upload succeeds');
+    }
+
+    // Req 19: Unsupported file type returns 400
+    {
+      const unsupportedExts = ['malware.exe', 'archive.zip', 'notes.txt', 'script.js'];
+      for (const badName of unsupportedExts) {
+        const fd = new FormData();
+        fd.append('file', new File([new TextEncoder().encode('unsupported')], badName, { type: 'text/plain' }));
+        const res = await app.fetch(
+          new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer token-admin-valid' },
+            body: fd
+          }),
+          workerEnv
+        );
+        assert.strictEqual(res.status, 400, `Unsupported file '${badName}' must return 400`);
+      }
+      console.log('✓ Req 19 Passed: Unsupported file types (.txt, .exe, .zip) return 400');
+    }
+
+    // Req 20: MIME spoofing / corrupted content failing magic bytes returns 400
+    {
+      const fakePdfBytes = new TextEncoder().encode('<html>Fake PDF content</html>');
+      const fd = new FormData();
+      fd.append('file', new File([fakePdfBytes], 'Spoofed.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'MIME spoofing must be rejected with 400');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, false);
+      console.log('✓ Req 20 Passed: MIME spoofing / corrupted content failing magic bytes returns 400');
+    }
+
+    // Req 21: File >15 MB is rejected (413)
+    {
+      const oversizedBytes = new Uint8Array(15 * 1024 * 1024 + 1024);
+      oversizedBytes.set([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31, 0x2e, 0x34], 0);
+      const fd = new FormData();
+      fd.append('file', new File([oversizedBytes], 'Giant_File.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 413, 'File >15 MB must be rejected with 413');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, false);
+      assert.strictEqual(json.error.code, 'PAYLOAD_TOO_LARGE');
+      console.log('✓ Req 21 Passed: File >15 MB is rejected with 413 Payload Too Large');
+    }
+
+    // Req 22 & 23: Document stored directly in PAN root folder (driveFolderId), NEVER in /upload
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'Final_Computation.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200);
+      assert.deepStrictEqual(lastAdminUploadParents, ['folder-reg-client'], 'Must upload to PAN root folder');
+      assert.notStrictEqual(lastAdminUploadParents[0], 'upload-folder-reg-client', 'Must NEVER upload to /upload subfolder');
+      const json: any = await res.json();
+      assert.strictEqual(json.data.document.folderType, 'pan_root');
+      console.log('✓ Req 22 & 23 Passed: Stored directly in PAN root (driveFolderId), never in /upload subfolder');
+    }
+
+    // Req 24 & 25: uploaderType = 'administrator' and uploaderName = 'Administrator'
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'Official_Order.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200);
+      const json: any = await res.json();
+      assert.strictEqual(json.data.document.uploaderType, 'administrator');
+      assert.strictEqual(json.data.document.uploaderName, 'Administrator');
+      assert.strictEqual(json.document.uploaderType, 'administrator');
+      assert.strictEqual(json.document.uploaderName, 'Administrator');
+      console.log('✓ Req 24 & 25 Passed: uploaderType is "administrator" and uploaderName is "Administrator"');
+    }
+
+    // Req 26, 27, 28, 29: Client-supplied driveFolderId, uploaderType, uploaderName, PAN rejected (400)
+    {
+      const forbiddenParams = [
+        { key: 'driveFolderId', val: 'fake-hacked-folder' },
+        { key: 'folderId', val: 'fake-hacked-folder' },
+        { key: 'uploaderType', val: 'client' },
+        { key: 'uploaderName', val: 'Hacked Admin' },
+        { key: 'pan', val: 'HACK1234F' },
+        { key: 'panNumber', val: 'HACK1234F' }
+      ];
+
+      for (const item of forbiddenParams) {
+        const fd = new FormData();
+        fd.append('file', new File([validPdfBytes], 'doc.pdf', { type: 'application/pdf' }));
+        fd.append(item.key, item.val);
+        const res = await app.fetch(
+          new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer token-admin-valid' },
+            body: fd
+          }),
+          workerEnv
+        );
+        assert.strictEqual(res.status, 400, `Forbidden form field '${item.key}' must be rejected with 400`);
+      }
+
+      // Also verify query parameter rejection
+      const resQuery = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload?driveFolderId=hacked', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(resQuery.status, 400, 'Forbidden query parameter driveFolderId must return 400');
+      console.log('✓ Req 26-29 Passed: Client-supplied driveFolderId, uploaderType, uploaderName, and PAN rejected (400)');
+    }
+
+    // Req 30: Filename sanitization is applied (path traversal sequences stripped)
+    {
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], '../../etc/passwd/TaxNotice.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200);
+      const json: any = await res.json();
+      assert.ok(!json.data.document.name.includes('../'), 'Path traversal must be stripped from filename');
+      assert.ok(!lastAdminUploadName.includes('../'), 'Path traversal must be stripped from uploaded file name');
+      console.log('✓ Req 30 Passed: Filename sanitization applied and path traversal stripped');
+    }
+
+    // Bonus: Duplicate filename protection in client's PAN root folder
+    {
+      // 'PAN_Statement.pdf' already exists in folder-reg-client
+      const fd = new FormData();
+      fd.append('file', new File([validPdfBytes], 'PAN_Statement.pdf', { type: 'application/pdf' }));
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/upload', {
+          method: 'POST',
+          headers: { Authorization: 'Bearer token-admin-valid' },
+          body: fd
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200);
+      const json: any = await res.json();
+      assert.strictEqual(json.data.document.name, 'PAN_Statement (1).pdf', 'Duplicate name must be resolved safely with counter');
+      console.log('✓ Bonus Passed: Duplicate filename resolved safely without collision');
+    }
 
     console.log('\n--- All STEP 26A & 26D Admin Client and Document API Tests Passed Successfully! ---\n');
   } finally {

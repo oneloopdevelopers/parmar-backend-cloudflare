@@ -539,6 +539,85 @@ export class AdminClientService {
     );
     throw new NotFoundError('Document not found or inaccessible in the client repository.');
   }
+
+  /**
+   * Uploads an administrator document directly into the client's authoritative PAN root folder.
+   *
+   * Security & Scope Invariants:
+   * 1. Target client UID is validated against Firestore users/{clientId}.
+   * 2. Authoritative client profile must have status === 'active' and a valid driveFolderId.
+   * 3. Target parent is strictly users/{clientId}.driveFolderId (the PAN root folder).
+   * 4. Uploads NEVER go into the client's 'upload' subfolder.
+   * 5. Safe duplicate filename protection: appends (1), (2), etc., if a file with the same name exists.
+   * 6. Authoritatively assigns uploaderType = 'administrator', uploaderName = 'Administrator', folderType = 'pan_root'.
+   */
+  public async uploadAdminDocument(
+    clientId: string,
+    fileData: {
+      name: string;
+      mimeType: string;
+      buffer: Uint8Array;
+      sizeBytes: number;
+    },
+    ctx: AdminClientServiceContext
+  ): Promise<AdminClientDocumentItem> {
+    const client = await this.getAuthoritativeClientProfile(clientId, ctx);
+    const panFolderId = client.driveFolderId;
+
+    logger.info(
+      `AdminClientService: Uploading document '${fileData.name}' to PAN root folder '${panFolderId}' for client UID: ${client.clientUid}`
+    );
+
+    // Check existing files in client's PAN root folder to prevent overwrite and safely handle duplicates
+    let targetFilename = fileData.name;
+    try {
+      const existingFiles = await googleDriveRestService.listFilesInFolder(panFolderId, ctx.driveAuthOptions);
+      const existingNames = new Set(existingFiles.map((f) => f.name.toLowerCase()));
+
+      if (existingNames.has(targetFilename.toLowerCase())) {
+        const lastDot = targetFilename.lastIndexOf('.');
+        const base = lastDot > 0 ? targetFilename.substring(0, lastDot) : targetFilename;
+        const ext = lastDot > 0 ? targetFilename.substring(lastDot) : '';
+        let counter = 1;
+        let candidateName = `${base} (${counter})${ext}`;
+        while (existingNames.has(candidateName.toLowerCase())) {
+          counter++;
+          candidateName = `${base} (${counter})${ext}`;
+        }
+        targetFilename = candidateName;
+        logger.info(
+          `AdminClientService: Resolved duplicate filename for '${fileData.name}' -> '${targetFilename}' in folder '${panFolderId}'`
+        );
+      }
+    } catch (listErr) {
+      logger.warn(`AdminClientService: Could not list folder before upload, proceeding with original filename:`, listErr);
+    }
+
+    // Upload directly to client's PAN root folder (parents: [panFolderId])
+    const uploadResult = await googleDriveRestService.uploadFileMultipart(
+      {
+        name: targetFilename,
+        mimeType: fileData.mimeType,
+        parents: [panFolderId],
+        content: fileData.buffer
+      },
+      ctx.driveAuthOptions
+    );
+
+    const createdTime = uploadResult.createdTime || new Date().toISOString();
+
+    return {
+      documentId: uploadResult.id,
+      name: uploadResult.name,
+      mimeType: uploadResult.mimeType,
+      size: uploadResult.size || String(fileData.sizeBytes),
+      createdTime,
+      modifiedTime: createdTime,
+      folderType: 'pan_root',
+      uploaderType: 'administrator',
+      uploaderName: 'Administrator'
+    };
+  }
 }
 
 export const adminClientService = new AdminClientService();

@@ -38,7 +38,8 @@ export function getHealthStatus(req: Request, res: Response): Response {
       adminClientsList: 'GET /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
       adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
       adminClientDocumentsList: 'GET /api/admin/clients/:clientId/documents (Protected - Requires Admin Bearer <Firebase ID Token>)',
-      adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)'
+      adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)',
+      adminClientDocumentUpload: 'POST /api/admin/clients/:clientId/documents/upload (Protected - Requires Admin Bearer <Firebase ID Token>)'
     }
   };
 

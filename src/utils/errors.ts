@@ -57,3 +57,9 @@ export class ConflictError extends AppError {
     super(409, message, 'CONFLICT', details);
   }
 }
+
+export class PayloadTooLargeError extends AppError {
+  constructor(message = 'File size exceeds the maximum allowed limit of 15 MB.', details?: ApiErrorDetail[]) {
+    super(413, message, 'PAYLOAD_TOO_LARGE', details);
+  }
+}

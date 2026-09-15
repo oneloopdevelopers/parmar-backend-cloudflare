@@ -1,12 +1,12 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import { Env, ExecutionContext } from './types/worker.types';
-import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError, BadGatewayError, ConflictError } from './utils/errors';
+import { AppError, BadRequestError, ForbiddenError, NotFoundError, UnauthorizedError, BadGatewayError, ConflictError, PayloadTooLargeError } from './utils/errors';
 import { maskPanNumber } from './utils/clientProfileUtils';
 import { verifyFirebaseIdToken } from './services/firebaseTokenVerifier';
 import { firestoreRestService } from './services/firestoreRestService';
 import { googleDriveRestService, DriveRestOptions } from './services/googleDriveRestService';
-import { validateUploadedFile } from './utils/fileValidationUtils';
+import { validateUploadedFile, MAX_UPLOAD_FILE_SIZE_BYTES } from './utils/fileValidationUtils';
 import { logger } from './utils/logger';
 import { validateCreateClientInput } from './utils/adminValidation';
 import { adminClientService } from './services/adminClientService';
@@ -339,7 +339,8 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         adminClientsList: 'GET /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentsList: 'GET /api/admin/clients/:clientId/documents (Protected - Requires Admin Bearer <Firebase ID Token>)',
-        adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)'
+        adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        adminClientDocumentUpload: 'POST /api/admin/clients/:clientId/documents/upload (Protected - Requires Admin Bearer <Firebase ID Token>)'
       }
     };
 
@@ -1456,6 +1457,123 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       status: 200,
       headers
     });
+  });
+
+  // ==========================================
+  // ROUTE 11: POST /api/admin/clients/:clientId/documents/upload (Protected - Admin Only)
+  // Uploads document directly into target client's authoritative PAN root folder
+  // ==========================================
+  app.post('/api/admin/clients/:clientId/documents/upload', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const rawClientId = c.req.param('clientId');
+
+    if (!rawClientId || typeof rawClientId !== 'string' || !rawClientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+
+    const clientId = rawClientId.trim();
+
+    // Verify Content-Type is multipart/form-data
+    const contentType = c.req.header('content-type') || '';
+    if (!contentType.toLowerCase().includes('multipart/form-data')) {
+      throw new BadRequestError('Content-Type must be multipart/form-data for document upload.');
+    }
+
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    logger.info(`Worker: Processing POST /api/admin/clients/${clientId}/documents/upload by admin UID: ${adminUid}`);
+
+    // Parse Multipart Form Data
+    let formData: FormData;
+    try {
+      formData = await c.req.formData();
+    } catch (err) {
+      logger.error('Failed to parse multipart form data:', err);
+      throw new BadRequestError('Invalid multipart form data.');
+    }
+
+    // Zero-Trust check on multipart fields:
+    // Reject any client-supplied identity, PAN, or destination folder fields
+    for (const key of formData.keys()) {
+      const normalized = key.toLowerCase().replace(/[-_]/g, '');
+      if (FORBIDDEN_CLIENT_IDENTITY_KEYS.includes(normalized)) {
+        logger.warn(`Security violation: Admin supplied forbidden field '${key}' in upload form data`);
+        throw new BadRequestError(
+          `Security violation: Field '${key}' cannot be supplied in multipart form data. Identity and destination folder associations are strictly authoritative.`
+        );
+      }
+    }
+
+    // Extract and validate file field
+    const file = formData.get('file');
+    if (!file) {
+      throw new BadRequestError('Missing required multipart file field \'file\'.');
+    }
+
+    // Reject files larger than 15 MB with 413 Payload Too Large
+    if (typeof file === 'object' && file !== null) {
+      const candidate = file as { size?: number };
+      if (typeof candidate.size === 'number' && candidate.size > MAX_UPLOAD_FILE_SIZE_BYTES) {
+        throw new PayloadTooLargeError('File size exceeds the maximum allowed limit of 15 MB.');
+      }
+    }
+
+    // Perform multi-layer validation (size, MIME type whitelist, extension match, binary magic bytes, filename sanitization)
+    const validatedFile = await validateUploadedFile(file);
+
+    // Double check binary size against 15 MB limit
+    if (validatedFile.sizeBytes > MAX_UPLOAD_FILE_SIZE_BYTES) {
+      throw new PayloadTooLargeError('File size exceeds the maximum allowed limit of 15 MB.');
+    }
+
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
+    // Perform authoritative upload via AdminClientService
+    const documentItem = await adminClientService.uploadAdminDocument(
+      clientId,
+      {
+        name: validatedFile.sanitizedFilename,
+        mimeType: validatedFile.mimeType,
+        buffer: validatedFile.buffer,
+        sizeBytes: validatedFile.sizeBytes
+      },
+      {
+        projectId,
+        serviceAccountJson,
+        driveAuthOptions
+      }
+    );
+
+    logger.info(
+      `Worker: Document uploaded successfully by admin: ID ${documentItem.documentId}, name '${documentItem.name}' to PAN root for client UID: ${clientId}`
+    );
+
+    const docResponse = {
+      id: documentItem.documentId,
+      name: documentItem.name,
+      mimeType: documentItem.mimeType,
+      size: documentItem.size,
+      createdTime: documentItem.createdTime,
+      modifiedTime: documentItem.modifiedTime,
+      uploaderType: 'administrator' as const,
+      uploaderName: 'Administrator',
+      folderType: 'pan_root' as const
+    };
+
+    return c.json({
+      success: true,
+      message: 'Document uploaded successfully by administrator.',
+      data: {
+        document: docResponse
+      },
+      document: docResponse,
+      timestamp: new Date().toISOString()
+    }, 200);
   });
 
   // Global Error Handler
