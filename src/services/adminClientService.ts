@@ -453,12 +453,33 @@ export class AdminClientService {
       }
     }
 
+    // Authoritative password-protection status enrichment
+    const enrichedDocuments: AdminClientDocumentItem[] = await Promise.all(
+      documents.map(async (doc) => {
+        try {
+          const pwMeta = await firestoreRestService.getDocument('documentPasswords', doc.documentId, {
+            projectId: ctx.projectId,
+            serviceAccountJson: ctx.serviceAccountJson
+          });
+          return {
+            ...doc,
+            isPasswordProtected: Boolean(pwMeta && pwMeta.isPasswordProtected === true)
+          };
+        } catch {
+          return {
+            ...doc,
+            isPasswordProtected: false
+          };
+        }
+      })
+    );
+
     return {
       clientId: client.clientUid,
       panFolderId,
       uploadFolder: uploadFolderInfo,
-      documents,
-      total: documents.length
+      documents: enrichedDocuments,
+      total: enrichedDocuments.length
     };
   }
 

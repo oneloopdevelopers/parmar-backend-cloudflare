@@ -21,6 +21,7 @@ export interface Env {
   GOOGLE_OAUTH_SETUP_KEY?: string;
   GOOGLE_OAUTH_REDIRECT_URI?: string;
   GOOGLE_OAUTH_STATE?: KVNamespace;
+  DOCUMENT_PASSWORD_ENCRYPTION_KEY?: string;
   [key: string]: unknown;
 }
 

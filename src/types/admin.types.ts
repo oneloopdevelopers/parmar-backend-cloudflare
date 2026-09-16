@@ -48,6 +48,7 @@ export interface AdminClientDocumentItem {
   uploaderType: AdminUploaderType;
   uploaderName: string;
   isFolder?: boolean;
+  isPasswordProtected?: boolean;
 }
 
 export interface AdminClientUploadFolderInfo {

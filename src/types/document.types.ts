@@ -29,6 +29,25 @@ export interface DriveFileSafeMetadata {
   modifiedTime: string;
   uploaderType?: 'administrator' | 'client';
   uploaderName?: string;
+  isPasswordProtected?: boolean;
+}
+
+export interface DocumentPasswordMetadata {
+  driveFileId: string;
+  clientId: string;
+  isPasswordProtected: boolean;
+  encryptedPassword: string;
+  iv: string;
+  algorithm: string;
+  keyVersion: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface DocumentPasswordResponse {
+  documentId: string;
+  isPasswordProtected: boolean;
+  password: string | null;
 }
 
 export interface DriveFolderTestResponse {
@@ -63,6 +82,7 @@ export interface DriveFileUploadResult {
   createdTime?: string;
   uploaderType?: 'administrator' | 'client';
   uploaderName?: string;
+  isPasswordProtected?: boolean;
 }
 
 export interface UploadFileParams {

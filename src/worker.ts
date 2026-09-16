@@ -27,6 +27,10 @@ import {
   createSetupSession,
   validateAndConsumeSetupToken
 } from './services/googleOAuthService';
+import {
+  encryptDocumentPassword,
+  decryptDocumentPassword
+} from './services/documentPasswordCrypto';
 
 export interface WorkerVariables {
   verifiedUid: string;
@@ -56,6 +60,23 @@ const FORBIDDEN_CLIENT_IDENTITY_KEYS = [
   'uploadername',
   'uploader_name'
 ];
+
+/**
+ * Extracts DOCUMENT_PASSWORD_ENCRYPTION_KEY safely from Worker env bindings or process.env.
+ */
+export function getDocumentPasswordEncryptionKey(env?: Env): string | undefined {
+  const fromEnv = env?.DOCUMENT_PASSWORD_ENCRYPTION_KEY;
+  if (typeof fromEnv === 'string' && fromEnv.trim()) {
+    return fromEnv.trim();
+  }
+  if (typeof process !== 'undefined' && process.env?.DOCUMENT_PASSWORD_ENCRYPTION_KEY) {
+    const fromProc = process.env.DOCUMENT_PASSWORD_ENCRYPTION_KEY;
+    if (typeof fromProc === 'string' && fromProc.trim()) {
+      return fromProc.trim();
+    }
+  }
+  return undefined;
+}
 
 /**
  * Extracts FIREBASE_SERVICE_ACCOUNT_JSON safely from Worker env bindings or process.env.
@@ -1019,9 +1040,30 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     logger.info(`Worker: Retrieved ${mergedDocuments.length} document(s) (PAN + upload) for UID: ${uid}`);
 
+    // Authoritative password-protection status enrichment
+    const documentsWithProtection = await Promise.all(
+      mergedDocuments.map(async (doc) => {
+        try {
+          const pwMeta = await firestoreRestService.getDocument('documentPasswords', doc.id, {
+            projectId,
+            serviceAccountJson
+          });
+          return {
+            ...doc,
+            isPasswordProtected: Boolean(pwMeta && pwMeta.isPasswordProtected === true)
+          };
+        } catch {
+          return {
+            ...doc,
+            isPasswordProtected: false
+          };
+        }
+      })
+    );
+
     return c.json({
       success: true,
-      documents: mergedDocuments
+      documents: documentsWithProtection
     }, 200);
   });
 
@@ -1245,6 +1287,39 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     // Strict multi-layer file validation (size, MIME type, extension, signature, sanitization)
     const validatedFile = await validateUploadedFile(file);
 
+    // Validate optional documentPassword
+    const rawDocumentPassword = formData.get('documentPassword') ?? formData.get('password');
+    let documentPassword: string | undefined;
+
+    if (rawDocumentPassword !== null && rawDocumentPassword !== undefined) {
+      if (typeof rawDocumentPassword !== 'string') {
+        throw new BadRequestError('documentPassword must be a string.');
+      }
+      const trimmed = rawDocumentPassword.trim();
+      if (trimmed.length === 0) {
+        throw new BadRequestError('Document password cannot be empty or whitespace-only.');
+      }
+      if (trimmed.length > 128) {
+        throw new BadRequestError('Document password must not exceed 128 characters.');
+      }
+      documentPassword = rawDocumentPassword;
+    }
+
+    const isPasswordProtected = Boolean(documentPassword);
+
+    // Validate that DOCUMENT_PASSWORD_ENCRYPTION_KEY exists BEFORE uploading to Google Drive
+    let passwordEncryptionKey: string | undefined;
+    if (isPasswordProtected) {
+      passwordEncryptionKey = getDocumentPasswordEncryptionKey(c.env);
+      if (!passwordEncryptionKey) {
+        throw new AppError(
+          500,
+          'Server configuration error: DOCUMENT_PASSWORD_ENCRYPTION_KEY is missing.',
+          'SERVER_CONFIG_ERROR'
+        );
+      }
+    }
+
     // 7. Upload directly to Google Drive into the client's authoritative 'upload' subfolder
     // Exactly one destination parent: the resolved upload folder ID.
     const uploadedDocument = await googleDriveRestService.uploadFileMultipart(
@@ -1258,25 +1333,66 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     );
 
     logger.info(
-      `Worker: Document uploaded successfully: ID ${uploadedDocument.id}, name '${uploadedDocument.name}' to upload subfolder for UID: ${uid}`
+      `Worker: Document uploaded successfully: ID ${uploadedDocument.id}, name '${uploadedDocument.name}' to upload subfolder for UID: ${uid} (passwordProtected: ${isPasswordProtected})`
     );
 
-    // 8. Return safe metadata response
-    // Never expose driveFolderId, uploadFolderId, service account info, or UID
+    // 8. If password protected, encrypt and store metadata in documentPasswords/{driveFileId}
+    if (isPasswordProtected && documentPassword && passwordEncryptionKey) {
+      try {
+        const encrypted = await encryptDocumentPassword(documentPassword, passwordEncryptionKey);
+        const nowIso = new Date().toISOString();
+        await firestoreRestService.setDocument(
+          'documentPasswords',
+          uploadedDocument.id,
+          {
+            driveFileId: uploadedDocument.id,
+            clientId: uid,
+            isPasswordProtected: true,
+            encryptedPassword: encrypted.encryptedPassword,
+            iv: encrypted.iv,
+            algorithm: encrypted.algorithm,
+            keyVersion: encrypted.keyVersion,
+            createdAt: nowIso,
+            updatedAt: nowIso
+          },
+          {
+            projectId,
+            serviceAccountJson
+          }
+        );
+      } catch (err) {
+        logger.error('Failed to persist document password metadata after upload:', err instanceof Error ? err.message : String(err));
+        // Safe cleanup / rollback of uploaded file from Google Drive
+        try {
+          await googleDriveRestService.deleteFile(uploadedDocument.id, driveAuthOptions);
+          logger.info(`Rolled back Google Drive file ${uploadedDocument.id} due to password metadata persistence failure.`);
+        } catch (cleanupErr) {
+          logger.error(`Failed to clean up Google Drive file ${uploadedDocument.id} during rollback:`, cleanupErr);
+        }
+        throw new AppError(500, 'Failed to store document security metadata. Upload was aborted.', 'METADATA_PERSISTENCE_ERROR');
+      }
+    }
+
+    // 9. Return safe metadata response
+    // Never expose driveFolderId, uploadFolderId, service account info, UID, password, IV, or encryption key
+    const docResponse = {
+      id: uploadedDocument.id,
+      name: uploadedDocument.name,
+      mimeType: uploadedDocument.mimeType,
+      size: uploadedDocument.size || String(validatedFile.sizeBytes),
+      createdTime: uploadedDocument.createdTime || new Date().toISOString(),
+      uploaderType: 'client' as const,
+      uploaderName: authoritativeClientName,
+      isPasswordProtected
+    };
+
     return c.json({
       success: true,
       message: 'Document uploaded successfully.',
       data: {
-        document: {
-          id: uploadedDocument.id,
-          name: uploadedDocument.name,
-          mimeType: uploadedDocument.mimeType,
-          size: uploadedDocument.size || String(validatedFile.sizeBytes),
-          createdTime: uploadedDocument.createdTime || new Date().toISOString(),
-          uploaderType: 'client' as const,
-          uploaderName: authoritativeClientName
-        }
-      }
+        document: docResponse
+      },
+      document: docResponse
     }, 200);
   });
 
@@ -1457,6 +1573,101 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       status: 200,
       headers
     });
+  });
+
+  // ==========================================
+  // ROUTE 10B: GET /api/admin/clients/:clientId/documents/:documentId/password (Protected - Admin Only)
+  // Authoritatively retrieves and decrypts the password for a client's document.
+  // ==========================================
+  app.get('/api/admin/clients/:clientId/documents/:documentId/password', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const rawClientId = c.req.param('clientId');
+    const rawDocId = c.req.param('documentId');
+
+    if (!rawClientId || typeof rawClientId !== 'string' || !rawClientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+    if (!rawDocId || typeof rawDocId !== 'string' || !rawDocId.trim()) {
+      throw new BadRequestError('A valid Google Drive document ID is required.');
+    }
+
+    const clientId = rawClientId.trim();
+    const documentId = rawDocId.trim();
+
+    // Prevent path traversal, directory separators, null bytes, and malformed characters
+    if (!/^[a-zA-Z0-9_-]{5,100}$/.test(documentId)) {
+      throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
+    }
+
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
+    // Verify client exists, active, and document belongs to selected client's repository (PAN folder or upload folder)
+    // IDOR / cross-client access throws NotFoundError (safe 404 response)
+    await adminClientService.verifyClientDocumentAccess(clientId, documentId, {
+      projectId,
+      serviceAccountJson,
+      driveAuthOptions
+    });
+
+    // Look up documentPasswords/{documentId}
+    const passwordRecord = await firestoreRestService.getDocument('documentPasswords', documentId, {
+      projectId,
+      serviceAccountJson
+    });
+
+    // If no password metadata exists or not password protected, return safe response
+    if (!passwordRecord || !passwordRecord.isPasswordProtected || !passwordRecord.encryptedPassword) {
+      return c.json({
+        success: true,
+        data: {
+          documentId,
+          isPasswordProtected: false,
+          password: null
+        }
+      }, 200);
+    }
+
+    // Retrieve DOCUMENT_PASSWORD_ENCRYPTION_KEY
+    const encryptionKey = getDocumentPasswordEncryptionKey(c.env);
+    if (!encryptionKey) {
+      throw new AppError(
+        500,
+        'Server configuration error: DOCUMENT_PASSWORD_ENCRYPTION_KEY is missing.',
+        'SERVER_CONFIG_ERROR'
+      );
+    }
+
+    // Decrypt the password
+    const decryptedPassword = await decryptDocumentPassword(
+      {
+        encryptedPassword: String(passwordRecord.encryptedPassword),
+        iv: String(passwordRecord.iv),
+        algorithm: passwordRecord.algorithm ? String(passwordRecord.algorithm) : undefined,
+        keyVersion: passwordRecord.keyVersion ? String(passwordRecord.keyVersion) : undefined
+      },
+      encryptionKey
+    );
+
+    // Audit logging: log only safe metadata (Admin UID, client ID, document ID, action, timestamp). Never log the password.
+    logger.info(
+      `Admin accessed document password: adminUid='${adminUid}', clientId='${clientId}', documentId='${documentId}', action='RETRIEVE_DOCUMENT_PASSWORD', timestamp='${new Date().toISOString()}'`
+    );
+
+    return c.json({
+      success: true,
+      data: {
+        documentId,
+        isPasswordProtected: true,
+        password: decryptedPassword
+      }
+    }, 200);
   });
 
   // ==========================================
