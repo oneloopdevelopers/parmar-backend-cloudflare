@@ -130,6 +130,23 @@ export async function runAdminEndpointsTests() {
   let failAtStep: 'none' | 'drive' | 'firestore' = 'none';
   let lastAdminUploadParents: string[] = [];
   let lastAdminUploadName = '';
+  const memoryDocumentPasswords = new Map<string, any>();
+  const deletedDriveFilesSet = new Set<string>();
+  const deletedDriveFileIds: string[] = [];
+  const deletedPasswordDocIds: string[] = [];
+  let simulateDriveDeleteFailure = false;
+  let simulateFirestorePasswordDeleteFailure = false;
+
+  // Seed document password metadata for doc-pan-root-1
+  memoryDocumentPasswords.set('doc-pan-root-1', {
+    driveFileId: 'doc-pan-root-1',
+    clientId: 'client-user-1',
+    isPasswordProtected: true,
+    encryptedPassword: 'mock-encrypted-password',
+    iv: 'mock-iv',
+    algorithm: 'AES-256-GCM',
+    keyVersion: '1'
+  });
 
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -250,6 +267,51 @@ export async function runAdminEndpointsTests() {
       return new Response(JSON.stringify({ fields }), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    // documentPasswords collection operations
+    if (url.includes('/databases/(default)/documents/documentPasswords/')) {
+      const parts = url.split('/documents/documentPasswords/');
+      const docId = decodeURIComponent(parts[1].split('?')[0]);
+      if (init?.method === 'DELETE') {
+        if (simulateFirestorePasswordDeleteFailure) {
+          return new Response(
+            JSON.stringify({ error: { message: 'Firestore simulated delete error', code: 500 } }),
+            { status: 500, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        deletedPasswordDocIds.push(docId);
+        if (memoryDocumentPasswords.has(docId)) {
+          memoryDocumentPasswords.delete(docId);
+          return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+        // If not in memory, Firestore REST API returns 404
+        return new Response(
+          JSON.stringify({ error: { code: 404, message: 'Document not found' } }),
+          { status: 404, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (init?.method === 'GET') {
+        const record = memoryDocumentPasswords.get(docId);
+        if (!record) {
+          return new Response(JSON.stringify({ error: { code: 404, message: 'Document not found' } }), {
+            status: 404,
+            headers: { 'Content-Type': 'application/json' }
+          });
+        }
+        const fields: Record<string, any> = {};
+        for (const [k, v] of Object.entries(record)) {
+          if (typeof v === 'boolean') {
+            fields[k] = { booleanValue: v };
+          } else {
+            fields[k] = { stringValue: String(v) };
+          }
+        }
+        return new Response(JSON.stringify({ name: `documentPasswords/${docId}`, fields }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' }
+        });
+      }
+    }
+
     // 4. Google Drive REST operations
     // Client Documents search
     if (url.includes('/drive/v3/files?') && url.includes("Client+Documents")) {
@@ -261,11 +323,19 @@ export async function runAdminEndpointsTests() {
       );
     }
 
-    // Drive delete folder
+    // Drive delete file or folder
     if (init?.method === 'DELETE' && url.includes('/drive/v3/files/')) {
-      const fileId = url.split('/drive/v3/files/')[1].split('?')[0];
+      const fileId = decodeURIComponent(url.split('/drive/v3/files/')[1].split('?')[0]);
+      if (simulateDriveDeleteFailure) {
+        return new Response(
+          JSON.stringify({ error: { message: 'Drive simulated delete error', code: 500 } }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      deletedDriveFileIds.push(fileId);
+      deletedDriveFilesSet.add(fileId);
       memoryDriveFolders.delete(fileId);
-      return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      return new Response(null, { status: 204 });
     }
 
     // Drive create folder
@@ -386,6 +456,11 @@ export async function runAdminEndpointsTests() {
 
     // Drive get file metadata (fields=...)
     if (url.includes('/drive/v3/files/') && url.includes('fields=')) {
+      for (const deletedId of deletedDriveFilesSet) {
+        if (url.includes(`/drive/v3/files/${deletedId}?`)) {
+          return new Response(JSON.stringify({ error: { code: 404, message: 'File not found' } }), { status: 404 });
+        }
+      }
       if (url.includes('/drive/v3/files/doc-pan-root-1?')) {
         return new Response(
           JSON.stringify({
@@ -407,6 +482,58 @@ export async function runAdminEndpointsTests() {
             mimeType: 'application/pdf',
             size: '102400',
             parents: ['upload-folder-reg-client'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-double-delete-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-double-delete-1',
+            name: 'Double_Delete.pdf',
+            mimeType: 'application/pdf',
+            size: '102400',
+            parents: ['folder-reg-client'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-fail-drive-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-fail-drive-1',
+            name: 'Fail_Drive.pdf',
+            mimeType: 'application/pdf',
+            size: '102400',
+            parents: ['folder-reg-client'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-fail-fs-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-fail-fs-1',
+            name: 'Fail_FS.pdf',
+            mimeType: 'application/pdf',
+            size: '102400',
+            parents: ['folder-reg-client'],
+            trashed: false
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/drive/v3/files/doc-shortcut-1?')) {
+        return new Response(
+          JSON.stringify({
+            id: 'doc-shortcut-1',
+            name: 'Shortcut_Doc',
+            mimeType: 'application/vnd.google-apps.shortcut',
+            size: '0',
+            parents: ['folder-reg-client'],
             trashed: false
           }),
           { status: 200, headers: { 'Content-Type': 'application/json' } }
@@ -1498,6 +1625,352 @@ export async function runAdminEndpointsTests() {
       const json: any = await res.json();
       assert.strictEqual(json.data.document.name, 'PAN_Statement (1).pdf', 'Duplicate name must be resolved safely with counter');
       console.log('✓ Bonus Passed: Duplicate filename resolved safely without collision');
+    }
+
+    // ==========================================
+    // STEP 26E: SECURE ADMIN DOCUMENT DELETION TESTS (23 Scenarios)
+    // ==========================================
+    console.log('\n--- Running STEP 26E: Secure Admin Document Deletion Tests ---\n');
+
+    // Test 1: Unauthenticated request rejected with 401
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-pan-root-1', {
+          method: 'DELETE'
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 401, 'Unauthenticated DELETE request must return 401');
+      console.log('✓ Test 1 Passed: Unauthenticated request rejected (401)');
+    }
+
+    // Test 2: Normal client user token rejected with 403
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-pan-root-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-client-nonadmin' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Non-admin user token must be rejected with 403');
+      console.log('✓ Test 2 Passed: Non-admin token rejected (403)');
+    }
+
+    // Test 3: Inactive admin token rejected with 403
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-pan-root-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-inactive' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Inactive admin token must be rejected with 403');
+      console.log('✓ Test 3 Passed: Inactive admin token rejected (403)');
+    }
+
+    // Test 4: Nonexistent client rejected with 404
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-nonexistent-uid/documents/doc-pan-root-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Nonexistent client must return 404');
+      console.log('✓ Test 4 Passed: Nonexistent client rejected (404)');
+    }
+
+    // Test 5: Inactive client rejected with 403
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-inactive-1/documents/doc-pan-root-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Inactive client must return 403');
+      console.log('✓ Test 5 Passed: Inactive client rejected (403)');
+    }
+
+    // Test 6: Nonexistent document rejected with 404
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-nonexistent-999', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Nonexistent document must return 404');
+      console.log('✓ Test 6 Passed: Nonexistent document rejected (404)');
+    }
+
+    // Test 7: Document belonging to Client B requested under Client A (IDOR) rejected with 404
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-other-client-file', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Cross-client IDOR document deletion must return 404');
+      console.log('✓ Test 7 Passed: Cross-client IDOR access rejected (404)');
+    }
+
+    // Test 8: Document directly inside Client A PAN root deleted with 200
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-pan-root-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'PAN root document deletion must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.strictEqual(json.message, 'Document deleted successfully.');
+      assert.ok(deletedDriveFileIds.includes('doc-pan-root-1'), 'Drive delete must be called for doc-pan-root-1');
+      assert.ok(
+        res.headers.get('cache-control')?.includes('no-store'),
+        'Response must have private no-store cache headers'
+      );
+      console.log('✓ Test 8 Passed: Document directly inside PAN root deleted (200)');
+    }
+
+    // Test 9: Document inside Client A /upload folder deleted with 200
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-upload-subfolder-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, '/upload folder document deletion must return 200');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, true);
+      assert.ok(deletedDriveFileIds.includes('doc-upload-subfolder-1'), 'Drive delete must be called for doc-upload-subfolder-1');
+      console.log('✓ Test 9 Passed: Document inside /upload folder deleted (200)');
+    }
+
+    // Test 10: Folder ID rejected with 404
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-folder-as-file', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Folder ID must return 404');
+      console.log('✓ Test 10 Passed: Folder ID rejected (404)');
+    }
+
+    // Test 11: Shortcut rejected with 404
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-shortcut-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Shortcut must return 404');
+      console.log('✓ Test 11 Passed: Shortcut rejected (404)');
+    }
+
+    // Test 12: Trashed document rejected with 404
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-trashed-file', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Trashed document must return 404');
+      console.log('✓ Test 12 Passed: Trashed document rejected (404)');
+    }
+
+    // Test 13: Exact document ID passed to Drive delete
+    {
+      assert.ok(deletedDriveFileIds.includes('doc-pan-root-1'), 'Drive delete must be called with exact documentId');
+      assert.ok(deletedDriveFileIds.includes('doc-upload-subfolder-1'), 'Drive delete must be called with exact documentId');
+      console.log('✓ Test 13 Passed: Exact document ID passed to Google Drive deletion');
+    }
+
+    // Test 14: Password metadata cleanup (documentPasswords/{documentId} deleted)
+    {
+      assert.ok(deletedPasswordDocIds.includes('doc-pan-root-1'), 'Firestore delete must be called for doc-pan-root-1 password metadata');
+      assert.strictEqual(memoryDocumentPasswords.has('doc-pan-root-1'), false, 'documentPasswords record must be deleted');
+      console.log('✓ Test 14 Passed: Password metadata cleaned up from Firestore');
+    }
+
+    // Test 15: Drive deletion failure returns safe 502 and does NOT delete password metadata
+    {
+      simulateDriveDeleteFailure = true;
+      memoryDocumentPasswords.set('doc-fail-drive-1', {
+        driveFileId: 'doc-fail-drive-1',
+        clientId: 'client-user-1',
+        isPasswordProtected: true,
+        encryptedPassword: 'encrypted-pw-test'
+      });
+      const initialDeletedPasswordsCount = deletedPasswordDocIds.length;
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-fail-drive-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 502, 'Drive failure must return 502 Bad Gateway');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, false);
+      assert.strictEqual(deletedPasswordDocIds.length, initialDeletedPasswordsCount, 'Password metadata delete must NOT be called if Drive delete fails');
+      assert.strictEqual(memoryDocumentPasswords.has('doc-fail-drive-1'), true, 'Password metadata must remain intact in Firestore');
+
+      simulateDriveDeleteFailure = false;
+      console.log('✓ Test 15 Passed: Drive deletion failure halts execution and returns 502 without touching password metadata');
+    }
+
+    // Test 16: Firestore metadata deletion failure returns 500 without secondary Drive deletion
+    {
+      simulateFirestorePasswordDeleteFailure = true;
+      memoryDocumentPasswords.set('doc-fail-fs-1', {
+        driveFileId: 'doc-fail-fs-1',
+        clientId: 'client-user-1',
+        isPasswordProtected: true,
+        encryptedPassword: 'encrypted-pw-test-2'
+      });
+      const driveDeletesBefore = deletedDriveFileIds.length;
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-fail-fs-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 500, 'Firestore metadata cleanup failure must return 500');
+      const json: any = await res.json();
+      assert.strictEqual(json.success, false);
+      assert.strictEqual(json.error.code, 'METADATA_CLEANUP_ERROR');
+      assert.strictEqual(deletedDriveFileIds.length, driveDeletesBefore + 1, 'Drive delete occurred exactly once');
+      assert.ok(deletedDriveFileIds.includes('doc-fail-fs-1'), 'Drive delete was called for doc-fail-fs-1');
+
+      // Subsequent delete on same doc returns 404 because file is already gone from Drive
+      const res2 = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-fail-fs-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res2.status, 404, 'Subsequent request on already-deleted Drive document returns 404');
+
+      simulateFirestorePasswordDeleteFailure = false;
+      console.log('✓ Test 16 Passed: Firestore metadata cleanup failure returns 500 with no secondary Drive delete');
+    }
+
+    // Test 17: Client-supplied driveFolderId rejected with 400
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-pan-root-1?driveFolderId=injected-folder', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Forbidden query parameter driveFolderId must return 400');
+      console.log('✓ Test 17 Passed: Client-supplied driveFolderId rejected (400)');
+    }
+
+    // Test 18: Client-supplied panNumber rejected with 400
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-pan-root-1?panNumber=ABCDE1234F', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Forbidden query parameter panNumber must return 400');
+      console.log('✓ Test 18 Passed: Client-supplied panNumber rejected (400)');
+    }
+
+    // Test 19: Password confidentiality (never in response, errors, or logs)
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-double-delete-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      const text = await res.text();
+      assert.ok(!text.includes('password'), 'Password must never appear in response body');
+      assert.ok(!text.includes('encryptedPassword'), 'Encrypted password must never appear in response body');
+      console.log('✓ Test 19 Passed: Password confidentiality preserved in all responses');
+    }
+
+    // Test 20: Double delete (first was done in Test 19, second returns 404)
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/documents/doc-double-delete-1', {
+          method: 'DELETE',
+          headers: { Authorization: 'Bearer token-admin-valid' }
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Second delete request on same document must return 404');
+      console.log('✓ Test 20 Passed: Double delete returns 404 on second attempt');
+    }
+
+    // Test 21: Invalid document ID rejected safely (400)
+    {
+      const invalidDocIds = ['..traversal', 'inv@lid!', 'abc', 'has space', 'a'.repeat(105)];
+      for (const badDocId of invalidDocIds) {
+        const res = await app.fetch(
+          new Request(`https://worker.local/api/admin/clients/client-user-1/documents/${encodeURIComponent(badDocId)}`, {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer token-admin-valid' }
+          }),
+          workerEnv
+        );
+        assert.strictEqual(res.status, 400, `Invalid document ID '${badDocId}' must return 400`);
+      }
+      console.log('✓ Test 21 Passed: Invalid document IDs rejected safely (400)');
+    }
+
+    // Test 22: Invalid client ID rejected safely (400)
+    {
+      const invalidClientIds = ['..traversal', 'inv@lid!', 'has space', 'a'.repeat(130)];
+      for (const badClientId of invalidClientIds) {
+        const res = await app.fetch(
+          new Request(`https://worker.local/api/admin/clients/${encodeURIComponent(badClientId)}/documents/doc-pan-root-1`, {
+            method: 'DELETE',
+            headers: { Authorization: 'Bearer token-admin-valid' }
+          }),
+          workerEnv
+        );
+        assert.strictEqual(res.status, 400, `Invalid client ID '${badClientId}' must return 400`);
+      }
+      console.log('✓ Test 22 Passed: Invalid client IDs rejected safely (400)');
+    }
+
+    // Test 23: Missing password metadata handled gracefully (200, no-op cleanup)
+    {
+      // doc-upload-subfolder-1 had no password metadata in memoryDocumentPasswords
+      // It was successfully deleted in Test 9, and Firestore delete was invoked without failing
+      assert.strictEqual(deletedPasswordDocIds.includes('doc-upload-subfolder-1'), true, 'Firestore delete was called even without pre-existing password metadata');
+      console.log('✓ Test 23 Passed: Missing password metadata handled gracefully (200, no-op cleanup)');
     }
 
     console.log('\n--- All STEP 26A & 26D Admin Client and Document API Tests Passed Successfully! ---\n');

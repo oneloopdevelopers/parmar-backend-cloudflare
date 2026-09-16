@@ -630,13 +630,20 @@ export class GoogleDriveRestService {
 
   /**
    * Deletes (or permanently removes) a file or folder from Google Drive by fileId.
-   * Used for rollback if client provisioning fails midway.
+   * When options.throwOnError is false (default), failures are logged for rollback without throwing.
+   * When options.throwOnError is true, failures throw BadGatewayError without exposing raw API error bodies.
    */
   public async deleteFile(
     fileId: string,
-    options: DriveRestOptions
+    options: DriveRestOptions & { throwOnError?: boolean }
   ): Promise<void> {
-    if (!fileId || !fileId.trim()) return;
+    const throwOnError = options.throwOnError === true;
+    if (!fileId || typeof fileId !== 'string' || !fileId.trim()) {
+      if (throwOnError) {
+        throw new BadRequestError('A valid Google Drive file ID is required.');
+      }
+      return;
+    }
 
     const cleanFileId = encodeURIComponent(fileId.trim());
     const fetchImpl = options.customFetch || fetch;
@@ -653,13 +660,25 @@ export class GoogleDriveRestService {
         }
       });
 
-      if (!res.ok && res.status !== 404) {
-        const errText = await res.text();
-        logger.warn(`Drive REST deleteFile for ${fileId} returned status ${res.status}:`, errText);
+      if (!res.ok) {
+        if (throwOnError) {
+          logger.warn(`Drive REST deleteFile for ${fileId} failed with status ${res.status}`);
+          throw new BadGatewayError('Failed to delete document from Google Drive.');
+        } else if (res.status !== 404) {
+          const errText = await res.text();
+          logger.warn(`Drive REST deleteFile for ${fileId} returned status ${res.status}:`, errText);
+        }
       } else {
-        logger.info(`Drive REST deleteFile succeeded / rolled back: ${fileId}`);
+        logger.info(`Drive REST deleteFile succeeded: ${fileId}`);
       }
     } catch (err) {
+      if (throwOnError) {
+        if (err instanceof BadRequestError || err instanceof BadGatewayError) {
+          throw err;
+        }
+        logger.error(`Drive REST deleteFile for ${fileId} failed:`, err instanceof Error ? err.message : String(err));
+        throw new BadGatewayError('Failed to delete document from Google Drive.');
+      }
       logger.error(`Failed to delete Drive file/folder ${fileId} during rollback:`, err instanceof Error ? err.message : String(err));
     }
   }

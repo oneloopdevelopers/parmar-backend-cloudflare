@@ -1671,6 +1671,82 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   });
 
   // ==========================================
+  // ROUTE 10C: DELETE /api/admin/clients/:clientId/documents/:documentId (Protected - Admin Only)
+  // Authoritatively deletes client document from Google Drive and cleans up password metadata
+  // ==========================================
+  app.delete('/api/admin/clients/:clientId/documents/:documentId', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const rawClientId = c.req.param('clientId');
+    const rawDocId = c.req.param('documentId');
+
+    if (!rawClientId || typeof rawClientId !== 'string' || !rawClientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+    const clientId = rawClientId.trim();
+    if (clientId.includes('/') || clientId.includes('\\') || clientId.includes('..') || !/^[a-zA-Z0-9_-]{1,128}$/.test(clientId)) {
+      throw new BadRequestError('Security violation: Invalid client UID format. Path traversal and malformed identifiers are strictly prohibited.');
+    }
+
+    if (!rawDocId || typeof rawDocId !== 'string' || !rawDocId.trim()) {
+      throw new BadRequestError('A valid Google Drive document ID is required.');
+    }
+    const documentId = rawDocId.trim();
+
+    // Prevent path traversal, directory separators, null bytes, and malformed characters
+    if (!/^[a-zA-Z0-9_-]{5,100}$/.test(documentId)) {
+      throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
+    }
+
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const driveAuthOptions = await resolveDriveAuthOptions(c.env, serviceAccountJson);
+
+    // Verify client exists, is active, and document belongs to selected client's repository (PAN folder or upload folder)
+    // IDOR / cross-client access / trashed / folder / shortcut throws NotFoundError (safe 404 response)
+    const { fileMetadata } = await adminClientService.verifyClientDocumentAccess(clientId, documentId, {
+      projectId,
+      serviceAccountJson,
+      driveAuthOptions
+    });
+
+    // 1. Delete the actual Google Drive file (stops immediately if Drive deletion fails)
+    await googleDriveRestService.deleteFile(documentId, {
+      ...driveAuthOptions,
+      throwOnError: true
+    });
+
+    // 2. Clean up corresponding documentPasswords/{documentId} Firestore metadata if present
+    try {
+      await firestoreRestService.deleteDocument('documentPasswords', documentId, {
+        projectId,
+        serviceAccountJson,
+        customFetch: driveAuthOptions.customFetch,
+        throwOnError: true
+      });
+    } catch (err) {
+      logger.error(`Failed to clean up password metadata for deleted document ${documentId}:`, err instanceof Error ? err.message : String(err));
+      throw new AppError(500, 'Document was deleted from Google Drive, but metadata cleanup failed.', 'METADATA_CLEANUP_ERROR');
+    }
+
+    // 3. Audit logging with safe metadata only (never log passwords, keys, or tokens)
+    logger.info(
+      `Admin deleted document: adminUid='${adminUid}', clientId='${clientId}', documentId='${documentId}', filename='${fileMetadata.name}', action='DOCUMENT_DELETED', timestamp='${new Date().toISOString()}'`
+    );
+
+    // 4. Return safe success response with no-store cache headers
+    c.header('Cache-Control', 'private, no-cache, no-store, must-revalidate');
+    return c.json({
+      success: true,
+      message: 'Document deleted successfully.'
+    }, 200);
+  });
+
+  // ==========================================
   // ROUTE 11: POST /api/admin/clients/:clientId/documents/upload (Protected - Admin Only)
   // Uploads document directly into target client's authoritative PAN root folder
   // ==========================================

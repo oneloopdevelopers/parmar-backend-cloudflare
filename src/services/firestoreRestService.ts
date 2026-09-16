@@ -1,7 +1,7 @@
 import { getGoogleAccessToken } from './googleServiceAccountAuth';
 import { validateClientProfile, validateUid } from '../utils/clientProfileUtils';
 import { ClientDocument, ClientProfileResponse } from '../types';
-import { BadRequestError, NotFoundError, BadGatewayError } from '../utils/errors';
+import { BadRequestError, NotFoundError, BadGatewayError, AppError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
 export interface FirestoreField {
@@ -174,6 +174,8 @@ export class FirestoreRestService {
   /**
    * Deletes a document from Firestore using the Google Cloud Firestore REST API v1.
    * Path format: `{collection}/{docId}`
+   * When throwOnError is false (default), failures are logged without throwing.
+   * When throwOnError is true, failures (other than 404) throw AppError.
    */
   public async deleteDocument(
     collection: string,
@@ -182,8 +184,10 @@ export class FirestoreRestService {
       projectId: string;
       serviceAccountJson: string;
       customFetch?: typeof fetch;
+      throwOnError?: boolean;
     }
   ): Promise<void> {
+    const throwOnError = options.throwOnError === true;
     const fetchImpl = options.customFetch || fetch;
     const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
       customFetch: options.customFetch
@@ -204,8 +208,16 @@ export class FirestoreRestService {
       if (!response.ok && response.status !== 404) {
         const errorBody = await response.text();
         logger.warn(`Firestore REST deleteDocument returned status ${response.status} for ${collection}/${docId}:`, errorBody);
+        if (throwOnError) {
+          throw new AppError(500, 'Cloud Firestore REST delete error', 'FIRESTORE_DELETE_ERROR');
+        }
       }
     } catch (err) {
+      if (throwOnError) {
+        if (err instanceof AppError) throw err;
+        logger.error(`Failed to delete document ${collection}/${docId} via Firestore REST:`, err instanceof Error ? err.message : String(err));
+        throw new AppError(500, 'Cloud Firestore REST delete error', 'FIRESTORE_DELETE_ERROR');
+      }
       logger.error(`Failed to delete document ${collection}/${docId} via Firestore REST:`, err instanceof Error ? err.message : String(err));
     }
   }
