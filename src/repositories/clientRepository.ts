@@ -85,6 +85,7 @@ export class ClientRepository {
       email: client.email,
       phone: client.phone,
       maskedPanNumber: maskedPan,
+      panNumber: client.panNumber,
       role: client.role,
       status: client.status
     };

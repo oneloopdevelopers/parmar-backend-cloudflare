@@ -50,12 +50,13 @@ export async function getUserProfile(
     const clientProfile = await clientRepository.getClientProfileByUid(authenticatedUid);
 
     // 4. Return strictly only the permitted profile fields:
-    // { name, email, phone, maskedPanNumber, role, status }
+    // { name, email, phone, maskedPanNumber, panNumber, role, status }
     res.status(200).json({
       name: clientProfile.name,
       email: clientProfile.email,
       phone: clientProfile.phone,
       maskedPanNumber: clientProfile.maskedPanNumber,
+      panNumber: clientProfile.panNumber,
       role: clientProfile.role,
       status: clientProfile.status
     });

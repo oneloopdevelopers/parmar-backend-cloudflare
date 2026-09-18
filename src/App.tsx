@@ -617,7 +617,7 @@ currentUser?.getIdToken(true)?.addOnCompleteListener { task ->
                   Client Profile Response: <code className="text-emerald-400 font-mono">GET /api/profile</code>
                 </h4>
                 <p className="text-xs text-neutral-400 mb-2">
-                  <code className="text-amber-400 font-mono">driveFolderId</code> is strictly excluded from client responses to maintain server-side authorization privacy. The PAN number is masked.
+                  <code className="text-amber-400 font-mono">driveFolderId</code> is strictly excluded from client responses to maintain server-side authorization privacy. The authenticated client receives both masked and full PAN numbers.
                 </p>
                 <pre className="bg-neutral-950 border border-neutral-800 rounded-lg p-3 font-mono text-xs text-sky-400 overflow-x-auto">
 {`{
@@ -625,6 +625,7 @@ currentUser?.getIdToken(true)?.addOnCompleteListener { task ->
   "email": "jane.doe@example.com",
   "phone": "+91 9876543210",
   "maskedPanNumber": "XXXXXX234F",
+  "panNumber": "ABCDE1234F",
   "role": "client",
   "status": "active"
 }`}

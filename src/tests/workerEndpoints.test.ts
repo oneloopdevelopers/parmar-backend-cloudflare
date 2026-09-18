@@ -712,7 +712,7 @@ async function runWorkerEndpointsTests() {
 
     // TEST 5: GET /api/profile (Protected)
     {
-      // 5a. Successful profile retrieval
+      // 5a. Successful profile retrieval: returns authentic full panNumber AND maskedPanNumber, never driveFolderId
       const req = new Request('http://localhost/api/profile', {
         method: 'GET',
         headers: { Authorization: 'Bearer token-active-123' }
@@ -724,12 +724,12 @@ async function runWorkerEndpointsTests() {
       assert.strictEqual(json.email, 'rajesh@example.com');
       assert.strictEqual(json.phone, '+91 98765 43210');
       assert.strictEqual(json.maskedPanNumber, 'XXXXXX234F', 'PAN should be masked');
+      assert.strictEqual(json.panNumber, 'ABCDE1234F', 'Authentic full PAN must be returned for authenticated user');
       assert.strictEqual(json.role, 'client');
       assert.strictEqual(json.status, 'active');
       assert.strictEqual(json.driveFolderId, undefined, 'driveFolderId must NEVER be exposed');
-      assert.strictEqual(json.panNumber, undefined, 'Raw PAN must NEVER be exposed');
 
-      // 5b. Inactive user profile access rejected (403)
+      // 5b. Inactive user profile access rejected (403) and returns no profile/PAN
       const reqInactive = new Request('http://localhost/api/profile', {
         method: 'GET',
         headers: { Authorization: 'Bearer token-inactive-456' }
@@ -738,6 +738,8 @@ async function runWorkerEndpointsTests() {
       assert.strictEqual(resInactive.status, 403);
       const inactiveJson: any = await resInactive.json();
       assert.strictEqual(inactiveJson.error.code, 'FORBIDDEN');
+      assert.strictEqual(inactiveJson.panNumber, undefined, 'Inactive response must not leak PAN');
+      assert.strictEqual(inactiveJson.maskedPanNumber, undefined, 'Inactive response must not leak masked PAN');
 
       // 5c. Non-existent user in Firestore (404)
       const reqNotFound = new Request('http://localhost/api/profile', {
@@ -747,7 +749,96 @@ async function runWorkerEndpointsTests() {
       const resNotFound = await app.request(reqNotFound, {}, workerEnv);
       assert.strictEqual(resNotFound.status, 404);
 
-      console.log('✓ Test 5 Passed: GET /api/profile enforces active status, masks PAN, and never exposes driveFolderId');
+      // 5d. Unauthenticated request rejected (401) with no profile/PAN returned
+      const reqUnauth = new Request('http://localhost/api/profile', {
+        method: 'GET'
+      });
+      const resUnauth = await app.request(reqUnauth, {}, workerEnv);
+      assert.strictEqual(resUnauth.status, 401);
+      const unauthJson: any = await resUnauth.json();
+      assert.strictEqual(unauthJson.panNumber, undefined, 'Unauthenticated response must not leak PAN');
+
+      // 5e. Client-supplied PAN in query string (?panNumber=ATTACK1234) is strictly rejected (400) by Zero-Trust Guard
+      const reqQueryTamper = new Request('http://localhost/api/profile?panNumber=ATTACK1234', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-active-123' }
+      });
+      const resQueryTamper = await app.request(reqQueryTamper, {}, workerEnv);
+      assert.strictEqual(resQueryTamper.status, 400, 'Client-supplied panNumber in query must be rejected with 400 Bad Request');
+      const queryTamperJson: any = await resQueryTamper.json();
+      assert.strictEqual(queryTamperJson.panNumber, undefined, 'Rejection response must not contain PAN');
+
+      // 5f. Client-supplied identity in query string (?uid=other_user&clientId=other_client) is strictly rejected (400)
+      const reqIdTamper = new Request('http://localhost/api/profile?uid=user-new-client-789&clientId=user-new-client-789', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-active-123' }
+      });
+      const resIdTamper = await app.request(reqIdTamper, {}, workerEnv);
+      assert.strictEqual(resIdTamper.status, 400, 'Client-supplied uid/clientId in query must be rejected with 400 Bad Request');
+
+      // 5g. Client-supplied forbidden identity header (x-pan, x-client-id, etc.) rejected with 400
+      const reqHeaderTamper = new Request('http://localhost/api/profile', {
+        method: 'GET',
+        headers: {
+          Authorization: 'Bearer token-active-123',
+          'x-pan': 'ATTACK1234'
+        }
+      });
+      const resHeaderTamper = await app.request(reqHeaderTamper, {}, workerEnv);
+      assert.strictEqual(resHeaderTamper.status, 400, 'x-pan identity override header must return 400');
+
+      // 5h. Arbitrary non-identity query parameter does not affect profile and returns authentic PAN
+      const reqSafeQuery = new Request('http://localhost/api/profile?cacheBust=12345', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-active-123' }
+      });
+      const resSafeQuery = await app.request(reqSafeQuery, {}, workerEnv);
+      assert.strictEqual(resSafeQuery.status, 200);
+      const safeQueryJson: any = await resSafeQuery.json();
+      assert.strictEqual(safeQueryJson.panNumber, 'ABCDE1234F', 'Authentic PAN is returned regardless of other query parameters');
+      assert.strictEqual(safeQueryJson.maskedPanNumber, 'XXXXXX234F');
+
+      // 5i. Tenant isolation: Another authenticated client receives their own full PAN and masked PAN
+      const reqOther = new Request('http://localhost/api/profile', {
+        method: 'GET',
+        headers: { Authorization: 'Bearer token-new-client' }
+      });
+      const resOther = await app.request(reqOther, {}, workerEnv);
+      assert.strictEqual(resOther.status, 200);
+      const otherJson: any = await resOther.json();
+      assert.strictEqual(otherJson.name, 'New Client');
+      assert.strictEqual(otherJson.panNumber, 'NEWCL1234F', 'User receives their own authentic PAN');
+      assert.strictEqual(otherJson.maskedPanNumber, 'XXXXXX234F');
+      assert.strictEqual(otherJson.driveFolderId, undefined);
+
+      // 5j. Logging security: verify logs do not contain raw PAN during profile processing
+      let loggedContent = '';
+      const originalLog = console.log;
+      const originalInfo = console.info;
+      const originalWarn = console.warn;
+      const originalError = console.error;
+      const capture = (...args: any[]) => { loggedContent += ' ' + args.map(a => String(a)).join(' '); };
+      console.log = capture;
+      console.info = capture;
+      console.warn = capture;
+      console.error = capture;
+
+      try {
+        const reqLogTest = new Request('http://localhost/api/profile', {
+          method: 'GET',
+          headers: { Authorization: 'Bearer token-active-123' }
+        });
+        await app.request(reqLogTest, {}, workerEnv);
+      } finally {
+        console.log = originalLog;
+        console.info = originalInfo;
+        console.warn = originalWarn;
+        console.error = originalError;
+      }
+
+      assert.ok(!loggedContent.includes('ABCDE1234F'), 'Server logs must NEVER contain the raw PAN during profile retrieval');
+
+      console.log('✓ Test 5 Passed: GET /api/profile returns both authentic panNumber & maskedPanNumber, rejects tampering, strictly isolates tenants, never logs PAN, and never exposes driveFolderId');
     }
 
     // TEST 6: GET /api/drive/test (Protected)

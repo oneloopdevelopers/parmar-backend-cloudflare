@@ -28,6 +28,7 @@ export interface ClientProfileResponse {
   email: string;
   phone: string;
   maskedPanNumber: string;
+  panNumber: string;
   role: ClientRole;
   status: ClientStatus;
 }

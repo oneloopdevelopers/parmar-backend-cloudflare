@@ -190,9 +190,10 @@ async function runClientRepositoryTests() {
     assert.strictEqual(profile.role, 'client');
     assert.strictEqual(profile.status, 'active');
 
-    // CRITICAL: driveFolderId MUST NOT be present in profile
+    // CRITICAL: driveFolderId MUST NOT be present in profile, but authentic panNumber and maskedPanNumber are returned
     assert.strictEqual((profile as any).driveFolderId, undefined);
-    assert.strictEqual((profile as any).panNumber, undefined);
+    assert.strictEqual(profile.panNumber, 'ABCDE1234F');
+    assert.strictEqual(profile.maskedPanNumber, 'XXXXXX234F');
   });
 
   await test('12. getClientProfileByUid throws NotFoundError when profile document is missing', async () => {
@@ -255,6 +256,7 @@ async function runClientRepositoryTests() {
     // Use customRepo directly to verify payload format
     const profile = await customRepo.getClientProfileByUid(req.user!.uid);
     assert.strictEqual(profile.maskedPanNumber, 'XXXXXX234F');
+    assert.strictEqual(profile.panNumber, 'ABCDE1234F');
     assert.strictEqual((profile as any).driveFolderId, undefined);
 
     // Also test controller rejection of arbitrary client UID in query

@@ -870,13 +870,14 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     // Return strictly only the permitted profile fields:
-    // { name, email, phone, maskedPanNumber, role, status }
+    // { name, email, phone, maskedPanNumber, panNumber, role, status }
     // Never expose driveFolderId or internal service account information.
     return c.json({
       name: clientProfile.name,
       email: clientProfile.email,
       phone: clientProfile.phone,
       maskedPanNumber: maskPanNumber(clientProfile.panNumber),
+      panNumber: clientProfile.panNumber,
       role: clientProfile.role,
       status: clientProfile.status
     }, 200);
