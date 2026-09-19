@@ -11,7 +11,7 @@
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
     "bootstrap:admin": "tsx scripts/bootstrap-admin.ts",
-    "test": "tsx src/tests/authenticateFirebaseUser.test.ts && tsx src/tests/clientRepository.test.ts && tsx src/tests/firebaseAdminConfig.test.ts && tsx src/tests/googleDriveService.test.ts && tsx src/tests/documentsEndpoint.test.ts && tsx src/tests/googleServiceAccountAuth.test.ts && tsx src/tests/firestoreRestService.test.ts && tsx src/tests/googleDriveRestService.test.ts && tsx src/tests/firebaseTokenVerifier.test.ts && tsx src/tests/fileValidationUtils.test.ts && tsx src/tests/workerEndpoints.test.ts && tsx src/tests/googleOAuthService.test.ts && tsx src/tests/adminEndpoints.test.ts && tsx src/tests/adminBootstrap.test.ts && tsx src/tests/documentPasswordFeature.test.ts"
+    "test": "tsx src/tests/authenticateFirebaseUser.test.ts && tsx src/tests/clientRepository.test.ts && tsx src/tests/firebaseAdminConfig.test.ts && tsx src/tests/googleDriveService.test.ts && tsx src/tests/documentsEndpoint.test.ts && tsx src/tests/googleServiceAccountAuth.test.ts && tsx src/tests/firestoreRestService.test.ts && tsx src/tests/googleDriveRestService.test.ts && tsx src/tests/firebaseTokenVerifier.test.ts && tsx src/tests/fileValidationUtils.test.ts && tsx src/tests/workerEndpoints.test.ts && tsx src/tests/googleOAuthService.test.ts && tsx src/tests/adminEndpoints.test.ts && tsx src/tests/adminBootstrap.test.ts && tsx src/tests/documentPasswordFeature.test.ts && tsx src/tests/notificationService.test.ts && tsx src/tests/notificationWorker.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

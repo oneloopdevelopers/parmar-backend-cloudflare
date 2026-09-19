@@ -276,8 +276,8 @@ export class FirestoreRestService {
         const parts = doc.name.split('/');
         const id = decodeURIComponent(parts[parts.length - 1]);
         const decoded = doc.fields ? decodeFirestoreFields(doc.fields) : {};
-        if (doc.createTime) decoded.createdAt = doc.createTime;
-        if (doc.updateTime) decoded.updatedAt = doc.updateTime;
+        if (doc.createTime && !decoded.createdAt) decoded.createdAt = doc.createTime;
+        if (doc.updateTime && !decoded.updatedAt) decoded.updatedAt = doc.updateTime;
         results.push({ id, data: decoded });
       }
 
@@ -349,8 +349,8 @@ export class FirestoreRestService {
       }
 
       const decoded = decodeFirestoreFields(doc.fields);
-      if (doc.createTime) decoded.createdAt = doc.createTime;
-      if (doc.updateTime) decoded.updatedAt = doc.updateTime;
+      if (doc.createTime && !decoded.createdAt) decoded.createdAt = doc.createTime;
+      if (doc.updateTime && !decoded.updatedAt) decoded.updatedAt = doc.updateTime;
 
       return decoded;
     } catch (err) {
@@ -361,6 +361,92 @@ export class FirestoreRestService {
       logger.error(`Failed to fetch document ${collection}/${docId} via Firestore REST:`, msg);
       throw new BadGatewayError(`Failed to communicate with Cloud Firestore REST API: ${msg}`);
     }
+  }
+
+  /**
+   * Commits multiple document writes in batches using Cloud Firestore REST API v1 :commit endpoint.
+   * Chunks writes into safe batches of up to 400 (well below Firestore's 500-write limit).
+   */
+  public async commitBatchWrites(
+    writes: Array<{
+      collection: string;
+      docId: string;
+      data: Record<string, unknown>;
+    }>,
+    options: {
+      projectId: string;
+      serviceAccountJson: string;
+      customFetch?: typeof fetch;
+    }
+  ): Promise<number> {
+    if (!writes || writes.length === 0) return 0;
+
+    const fetchImpl = options.customFetch || fetch;
+    const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+      customFetch: options.customFetch
+    });
+
+    const CHUNK_SIZE = 400;
+    let committedCount = 0;
+
+    for (let i = 0; i < writes.length; i += CHUNK_SIZE) {
+      const chunk = writes.slice(i, i + CHUNK_SIZE);
+      const commitUrl = `https://firestore.googleapis.com/v1/projects/${options.projectId}/databases/(default)/documents:commit`;
+
+      const firestoreWrites = chunk.map((w) => {
+        const cleanDocId = encodeURIComponent(w.docId.trim());
+        const fields: Record<string, FirestoreField> = {};
+        for (const [key, value] of Object.entries(w.data)) {
+          fields[key] = encodeFirestoreValue(value);
+        }
+        return {
+          update: {
+            name: `projects/${options.projectId}/databases/(default)/documents/${w.collection}/${cleanDocId}`,
+            fields
+          }
+        };
+      });
+
+      try {
+        const response = await fetchImpl(commitUrl, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({ writes: firestoreWrites })
+        });
+
+        if (response.ok) {
+          committedCount += chunk.length;
+          continue;
+        }
+
+        // If :commit endpoint is not implemented or rejected by mock/proxy, fallback to individual setDocument
+        if (response.status === 404 || response.status === 501) {
+          logger.warn(`Firestore REST :commit returned ${response.status}. Executing batch writes via sequential fallback.`);
+          for (const item of chunk) {
+            await this.setDocument(item.collection, item.docId, item.data, options);
+            committedCount++;
+          }
+          continue;
+        }
+
+        const errorBody = await response.text();
+        logger.error(`Firestore REST commitBatchWrites failed with HTTP ${response.status}:`, errorBody);
+        throw new BadGatewayError(`Cloud Firestore REST batch commit error: HTTP ${response.status}`);
+      } catch (err) {
+        if (err instanceof BadGatewayError) throw err;
+        logger.warn(`Firestore commit error, attempting fallback to individual writes: ${err instanceof Error ? err.message : String(err)}`);
+        for (const item of chunk) {
+          await this.setDocument(item.collection, item.docId, item.data, options);
+          committedCount++;
+        }
+      }
+    }
+
+    return committedCount;
   }
 
   /**

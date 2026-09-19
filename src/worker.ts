@@ -31,6 +31,7 @@ import {
   encryptDocumentPassword,
   decryptDocumentPassword
 } from './services/documentPasswordCrypto';
+import { notificationService } from './services/notificationService';
 
 export interface WorkerVariables {
   verifiedUid: string;
@@ -55,6 +56,11 @@ const FORBIDDEN_CLIENT_IDENTITY_KEYS = [
   'destination_folder',
   'clientid',
   'client_id',
+  'recipientuid',
+  'recipient_uid',
+  'recipient',
+  'targetuid',
+  'target_uid',
   'uploadertype',
   'uploader_type',
   'uploadername',
@@ -361,7 +367,13 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentsList: 'GET /api/admin/clients/:clientId/documents (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)',
-        adminClientDocumentUpload: 'POST /api/admin/clients/:clientId/documents/upload (Protected - Requires Admin Bearer <Firebase ID Token>)'
+        adminClientDocumentUpload: 'POST /api/admin/clients/:clientId/documents/upload (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        notificationsList: 'GET /api/notifications (Protected - Requires Bearer <Firebase ID Token>)',
+        notificationsUnreadCount: 'GET /api/notifications/unread-count (Protected - Requires Bearer <Firebase ID Token>)',
+        notificationMarkRead: 'PATCH /api/notifications/:notificationId/read (Protected - Requires Bearer <Firebase ID Token>)',
+        notificationsMarkAllRead: 'POST /api/notifications/mark-all-read (Protected - Requires Bearer <Firebase ID Token>)',
+        notificationDismiss: 'DELETE /api/notifications/:notificationId (Protected - Requires Bearer <Firebase ID Token>)',
+        adminNotificationCreate: 'POST /api/admin/notifications (Protected - Requires Admin Bearer <Firebase ID Token>)'
       }
     };
 
@@ -1862,6 +1874,211 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       document: docResponse,
       timestamp: new Date().toISOString()
     }, 200);
+  });
+
+  // =========================================================================
+  // NOTIFICATION CENTRE - CLIENT ENDPOINTS
+  // =========================================================================
+
+  // ROUTE 12: GET /api/notifications (Client Protected)
+  app.get('/api/notifications', requireAuth, async (c) => {
+    const callerUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const limit = c.req.query('limit');
+    const includeDismissed = c.req.query('includeDismissed');
+
+    const result = await notificationService.listClientNotifications(
+      callerUid,
+      { limit, includeDismissed },
+      { projectId, serviceAccountJson }
+    );
+
+    return c.json({
+      success: true,
+      message: 'Notifications retrieved successfully.',
+      data: {
+        notifications: result.notifications,
+        unreadCount: result.unreadCount
+      },
+      notifications: result.notifications,
+      unreadCount: result.unreadCount,
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // ROUTE 13: GET /api/notifications/unread-count (Client Protected)
+  app.get('/api/notifications/unread-count', requireAuth, async (c) => {
+    const callerUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const result = await notificationService.getClientUnreadCount(callerUid, {
+      projectId,
+      serviceAccountJson
+    });
+
+    return c.json({
+      success: true,
+      data: {
+        unreadCount: result.unreadCount
+      },
+      unreadCount: result.unreadCount,
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // ROUTE 14: PATCH /api/notifications/:notificationId/read (Client Protected)
+  app.patch('/api/notifications/:notificationId/read', requireAuth, async (c) => {
+    const callerUid = c.get('verifiedUid');
+    const notificationId = c.req.param('notificationId');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const result = await notificationService.markNotificationAsRead(
+      callerUid,
+      notificationId,
+      { projectId, serviceAccountJson }
+    );
+
+    return c.json({
+      success: true,
+      message: 'Notification marked as read.',
+      data: {
+        notification: result.notification,
+        unreadCount: result.unreadCount
+      },
+      notification: result.notification,
+      unreadCount: result.unreadCount,
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // ROUTE 15: POST /api/notifications/mark-all-read (Client Protected)
+  app.post('/api/notifications/mark-all-read', requireAuth, async (c) => {
+    const callerUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const result = await notificationService.markAllNotificationsAsRead(callerUid, {
+      projectId,
+      serviceAccountJson
+    });
+
+    return c.json({
+      success: true,
+      message: 'All notifications marked as read.',
+      data: {
+        updatedCount: result.updatedCount,
+        unreadCount: 0
+      },
+      updatedCount: result.updatedCount,
+      unreadCount: 0,
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // ROUTE 16: DELETE /api/notifications/:notificationId (Client Protected Dismissal)
+  app.delete('/api/notifications/:notificationId', requireAuth, async (c) => {
+    const callerUid = c.get('verifiedUid');
+    const notificationId = c.req.param('notificationId');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const result = await notificationService.dismissNotification(
+      callerUid,
+      notificationId,
+      { projectId, serviceAccountJson }
+    );
+
+    return c.json({
+      success: true,
+      message: result.message,
+      data: {
+        unreadCount: result.unreadCount
+      },
+      unreadCount: result.unreadCount,
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // =========================================================================
+  // NOTIFICATION CENTRE - ADMIN ENDPOINT
+  // =========================================================================
+
+  // ROUTE 17: POST /api/admin/notifications (Admin Protected)
+  app.post('/api/admin/notifications', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new BadRequestError('Request body must be a valid JSON object.');
+    }
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestError('Request body must be a valid JSON object.');
+    }
+
+    const result = await notificationService.createNotification(
+      adminUid,
+      body,
+      { projectId, serviceAccountJson }
+    );
+
+    if (result.target === 'INDIVIDUAL') {
+      return c.json({
+        success: true,
+        message: 'Notification sent successfully.',
+        data: {
+          target: 'INDIVIDUAL',
+          notification: result.notification
+        },
+        notification: result.notification,
+        timestamp: new Date().toISOString()
+      }, 201);
+    }
+
+    return c.json({
+      success: true,
+      message: `Broadcast notification sent to ${result.recipientCount} active client(s).`,
+      data: {
+        target: 'ALL_ACTIVE',
+        broadcastId: result.broadcastId,
+        recipientCount: result.recipientCount
+      },
+      broadcastId: result.broadcastId,
+      recipientCount: result.recipientCount,
+      timestamp: new Date().toISOString()
+    }, 201);
   });
 
   // Global Error Handler
