@@ -375,6 +375,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         notificationsMarkAllRead: 'POST /api/notifications/mark-all-read (Protected - Requires Bearer <Firebase ID Token>)',
         notificationDismiss: 'DELETE /api/notifications/:notificationId (Protected - Requires Bearer <Firebase ID Token>)',
         adminNotificationCreate: 'POST /api/admin/notifications (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        adminNotificationHistory: 'GET /api/admin/notifications/history (Protected - Requires Admin Bearer <Firebase ID Token>)',
         fcmTokenRegister: 'POST /api/profile/fcm-token (Protected - Requires Bearer <Firebase ID Token>)',
         fcmTokenUnregister: 'DELETE /api/profile/fcm-token (Protected - Requires Bearer <Firebase ID Token>)'
       }
@@ -2182,6 +2183,35 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       delivery: result.delivery,
       timestamp: new Date().toISOString()
     }, 201);
+  });
+
+  // ROUTE 18: GET /api/admin/notifications/history (Admin Protected)
+  app.get('/api/admin/notifications/history', requireAdminAuth, async (c) => {
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    const limit = c.req.query('limit');
+
+    const result = await notificationService.getNotificationHistory(
+      { limit },
+      { projectId, serviceAccountJson }
+    );
+
+    return c.json({
+      success: true,
+      message: 'Notification history retrieved successfully.',
+      data: {
+        history: result.history,
+        total: result.total
+      },
+      history: result.history,
+      total: result.total,
+      timestamp: new Date().toISOString()
+    }, 200);
   });
 
   // Global Error Handler

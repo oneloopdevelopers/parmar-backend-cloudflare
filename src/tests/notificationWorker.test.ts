@@ -53,12 +53,20 @@ export async function runNotificationWorkerTests() {
         claims: { sub: 'admin-notif-user', email: 'admin@example.com', role: 'admin' }
       };
     }
+    if (token === 'token-inactive-admin') {
+      return {
+        uid: 'admin-inactive-user',
+        email: 'inactive-admin@example.com',
+        claims: { sub: 'admin-inactive-user', email: 'inactive-admin@example.com', role: 'admin' }
+      };
+    }
     throw new Error('Invalid token');
   };
 
   const clientToken1 = 'token-client-1';
   const clientToken2 = 'token-client-2';
   const adminToken = 'token-admin';
+  const inactiveAdminToken = 'token-inactive-admin';
 
   // In-memory Firestore store for notifications and users
   const firestoreStore = new Map<string, Record<string, unknown>>();
@@ -90,6 +98,13 @@ export async function runNotificationWorkerTests() {
     driveFolderId: 'folder-admin',
     role: 'admin',
     status: 'active'
+  });
+  firestoreStore.set('users/admin-inactive-user', {
+    name: 'Inactive Admin',
+    email: 'inactive-admin@example.com',
+    phone: '+91 98765 44444',
+    role: 'admin',
+    status: 'inactive'
   });
 
   const originalFetch = globalThis.fetch;
@@ -161,7 +176,7 @@ export async function runNotificationWorkerTests() {
         const targetPath = decodeURIComponent(match[1]);
 
         // Collection listing
-        if (targetPath === 'users' || targetPath.endsWith('/notifications')) {
+        if (targetPath === 'users' || targetPath.endsWith('/notifications') || targetPath === 'broadcast_notifications' || targetPath === 'admin_notifications') {
           const prefix = targetPath + '/';
           const docs: any[] = [];
           for (const [key, val] of firestoreStore.entries()) {
@@ -453,6 +468,101 @@ export async function runNotificationWorkerTests() {
     const resClientAdmin = await app.request(reqClientAdmin, {}, workerEnv);
     assert.strictEqual(resClientAdmin.status, 403);
     console.log('✓ Test 13 Passed: Client token cannot access POST /api/admin/notifications (403 Forbidden)');
+
+    // ==========================================
+    // TEST 14: GET /api/admin/notifications/history without token returns 401
+    // ==========================================
+    const reqHistNoAuth = new Request('http://localhost/api/admin/notifications/history', {
+      method: 'GET'
+    });
+    const resHistNoAuth = await app.request(reqHistNoAuth, {}, workerEnv);
+    assert.strictEqual(resHistNoAuth.status, 401);
+    console.log('✓ Test 14 Passed: GET /api/admin/notifications/history rejects unauthenticated request (401)');
+
+    // ==========================================
+    // TEST 15: GET /api/admin/notifications/history with client token returns 403
+    // ==========================================
+    const reqHistClient = new Request('http://localhost/api/admin/notifications/history', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${clientToken1}` }
+    });
+    const resHistClient = await app.request(reqHistClient, {}, workerEnv);
+    assert.strictEqual(resHistClient.status, 403);
+    console.log('✓ Test 15 Passed: GET /api/admin/notifications/history rejects client token (403 Forbidden)');
+
+    // ==========================================
+    // TEST 16: GET /api/admin/notifications/history with inactive admin token returns 403
+    // ==========================================
+    const reqHistInactiveAdmin = new Request('http://localhost/api/admin/notifications/history', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${inactiveAdminToken}` }
+    });
+    const resHistInactiveAdmin = await app.request(reqHistInactiveAdmin, {}, workerEnv);
+    assert.strictEqual(resHistInactiveAdmin.status, 403);
+    console.log('✓ Test 16 Passed: GET /api/admin/notifications/history rejects inactive admin (403 Forbidden)');
+
+    // ==========================================
+    // TEST 17: GET /api/admin/notifications/history with active admin returns combined history
+    // ==========================================
+    const reqHistAdmin = new Request('http://localhost/api/admin/notifications/history', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const resHistAdmin = await app.request(reqHistAdmin, {}, workerEnv);
+    assert.strictEqual(resHistAdmin.status, 200);
+    const jsonHistAdmin: any = await resHistAdmin.json();
+
+    assert.strictEqual(jsonHistAdmin.success, true);
+    assert.strictEqual(jsonHistAdmin.message, 'Notification history retrieved successfully.');
+    assert.ok(Array.isArray(jsonHistAdmin.data.history));
+    assert.ok(Array.isArray(jsonHistAdmin.history));
+    assert.strictEqual(jsonHistAdmin.total, 2);
+    assert.strictEqual(jsonHistAdmin.data.total, 2);
+    assert.ok(typeof jsonHistAdmin.timestamp === 'string');
+
+    // First item is newest (broadcast notification from Test 9)
+    const bcastItem = jsonHistAdmin.data.history[0];
+    assert.strictEqual(bcastItem.target, 'ALL_ACTIVE');
+    assert.strictEqual(bcastItem.recipientUid, null);
+    assert.strictEqual(bcastItem.recipientCount, 2);
+    assert.strictEqual(bcastItem.title, 'GST Return Deadline Reminder');
+    assert.strictEqual(bcastItem.status, 'COMPLETED');
+    assert.strictEqual(bcastItem.createdByUid, 'admin-notif-user');
+
+    // Second item is individual notification from Test 3
+    const indItem = jsonHistAdmin.data.history[1];
+    assert.strictEqual(indItem.target, 'INDIVIDUAL');
+    assert.strictEqual(indItem.recipientUid, 'client-notif-1');
+    assert.strictEqual(indItem.recipientCount, 1);
+    assert.strictEqual(indItem.title, 'Form 26AS Ready');
+    assert.strictEqual(indItem.status, 'COMPLETED');
+    assert.strictEqual(indItem.createdByUid, 'admin-notif-user');
+    console.log('✓ Test 17 Passed: GET /api/admin/notifications/history returns combined broadcast and individual history');
+
+    // ==========================================
+    // TEST 18: GET /api/admin/notifications/history?limit=1 pagination
+    // ==========================================
+    const reqHistPaged = new Request('http://localhost/api/admin/notifications/history?limit=1', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const resHistPaged = await app.request(reqHistPaged, {}, workerEnv);
+    assert.strictEqual(resHistPaged.status, 200);
+    const jsonHistPaged: any = await resHistPaged.json();
+    assert.strictEqual(jsonHistPaged.data.history.length, 1);
+    assert.strictEqual(jsonHistPaged.data.total, 2);
+    console.log('✓ Test 18 Passed: GET /api/admin/notifications/history respects limit parameter');
+
+    // ==========================================
+    // TEST 19: GET /api/admin/notifications/history?limit=-5 rejects with 400
+    // ==========================================
+    const reqHistInvalid = new Request('http://localhost/api/admin/notifications/history?limit=-5', {
+      method: 'GET',
+      headers: { Authorization: `Bearer ${adminToken}` }
+    });
+    const resHistInvalid = await app.request(reqHistInvalid, {}, workerEnv);
+    assert.strictEqual(resHistInvalid.status, 400);
+    console.log('✓ Test 19 Passed: GET /api/admin/notifications/history rejects invalid limit (400 Bad Request)');
 
     console.log('\n--- All Notification Centre Worker Endpoint Tests Passed! ---\n');
   } finally {

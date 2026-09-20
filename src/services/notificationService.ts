@@ -13,7 +13,10 @@ import {
   CreateNotificationInput,
   BroadcastNotificationRecord,
   NotificationListResponse,
-  UnreadCountResponse
+  UnreadCountResponse,
+  AdminNotificationHistoryItem,
+  AdminNotificationHistoryQuery,
+  AdminNotificationHistoryResult
 } from '../types/notification.types';
 import { FcmDeliveryStats } from '../types/fcm.types';
 import {
@@ -557,6 +560,31 @@ export class NotificationService {
 
       logger.info(`NotificationService: Created INDIVIDUAL notification ${notifId} for client ${recipientUid} by admin ${adminUid}`);
 
+      // Persist administrative audit history document under admin_notifications/{historyId}
+      try {
+        const historyId = `ahist_${Date.now()}_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+        const historyRecord: Record<string, unknown> = {
+          id: historyId,
+          target: 'INDIVIDUAL',
+          recipientUid,
+          title,
+          message,
+          category,
+          recipientCount: 1,
+          status: 'COMPLETED',
+          createdAt: nowIso,
+          createdByUid: adminUid
+        };
+
+        await firestoreRestService.setDocument('admin_notifications', historyId, historyRecord, {
+          projectId: ctx.projectId,
+          serviceAccountJson: ctx.serviceAccountJson,
+          customFetch: ctx.customFetch
+        });
+      } catch (histErr) {
+        logger.error('NotificationService: Failed to persist admin history entry for individual notification:', histErr);
+      }
+
       // Dispatch FCM Push Notifications to all active device tokens for the recipient
       let delivery: FcmDeliveryStats = {
         tokensAttempted: 0,
@@ -718,6 +746,97 @@ export class NotificationService {
       broadcastId,
       recipientCount: activeClients.length,
       delivery
+    };
+  }
+
+  /**
+   * Retrieves notification history for the Admin Dashboard.
+   * Merges existing broadcast_notifications and new admin_notifications (for individual notifications).
+   * Sorted newest-first by createdAt.
+   */
+  public async getNotificationHistory(
+    query: AdminNotificationHistoryQuery,
+    ctx: NotificationServiceContext
+  ): Promise<AdminNotificationHistoryResult> {
+    let limitNum = 50;
+    if (query.limit !== undefined) {
+      const parsed = Number(query.limit);
+      if (Number.isInteger(parsed) && parsed > 0) {
+        limitNum = Math.min(parsed, 100);
+      } else {
+        throw new BadRequestError('Query parameter limit must be a positive integer.');
+      }
+    }
+
+    // 1. Fetch broadcast records from broadcast_notifications
+    const { documents: broadcastDocs } = await firestoreRestService.listDocuments('broadcast_notifications', {
+      projectId: ctx.projectId,
+      serviceAccountJson: ctx.serviceAccountJson,
+      pageSize: 100,
+      customFetch: ctx.customFetch
+    });
+
+    // 2. Fetch individual notifications from admin_notifications
+    const { documents: adminDocs } = await firestoreRestService.listDocuments('admin_notifications', {
+      projectId: ctx.projectId,
+      serviceAccountJson: ctx.serviceAccountJson,
+      pageSize: 100,
+      customFetch: ctx.customFetch
+    });
+
+    const historyItems: AdminNotificationHistoryItem[] = [];
+
+    // Map broadcast records
+    for (const doc of broadcastDocs) {
+      const data = doc.data;
+      historyItems.push({
+        id: String(data.id || doc.id),
+        target: 'ALL_ACTIVE',
+        recipientUid: null,
+        title: typeof data.title === 'string' ? data.title : '',
+        message: typeof data.message === 'string' ? data.message : '',
+        category: (typeof data.category === 'string' && ALLOWED_CATEGORIES.has(data.category as NotificationCategory))
+          ? (data.category as NotificationCategory)
+          : 'GENERAL',
+        recipientCount: typeof data.recipientCount === 'number' ? data.recipientCount : 0,
+        status: typeof data.status === 'string' ? data.status : 'COMPLETED',
+        createdAt: typeof data.createdAt === 'string' ? data.createdAt : new Date().toISOString(),
+        createdByUid: typeof data.createdByUid === 'string' ? data.createdByUid : ''
+      });
+    }
+
+    // Map individual admin_notifications records
+    for (const doc of adminDocs) {
+      const data = doc.data;
+      historyItems.push({
+        id: String(data.id || doc.id),
+        target: 'INDIVIDUAL',
+        recipientUid: typeof data.recipientUid === 'string' ? data.recipientUid : null,
+        title: typeof data.title === 'string' ? data.title : '',
+        message: typeof data.message === 'string' ? data.message : '',
+        category: (typeof data.category === 'string' && ALLOWED_CATEGORIES.has(data.category as NotificationCategory))
+          ? (data.category as NotificationCategory)
+          : 'GENERAL',
+        recipientCount: typeof data.recipientCount === 'number' ? data.recipientCount : 1,
+        status: typeof data.status === 'string' ? data.status : 'COMPLETED',
+        createdAt: typeof data.createdAt === 'string' ? data.createdAt : new Date().toISOString(),
+        createdByUid: typeof data.createdByUid === 'string' ? data.createdByUid : ''
+      });
+    }
+
+    // Sort newest first by createdAt
+    historyItems.sort((a, b) => {
+      const timeA = new Date(a.createdAt).getTime() || 0;
+      const timeB = new Date(b.createdAt).getTime() || 0;
+      return timeB - timeA;
+    });
+
+    const total = historyItems.length;
+    const paginated = historyItems.slice(0, limitNum);
+
+    return {
+      history: paginated,
+      total
     };
   }
 }

@@ -183,7 +183,7 @@ export async function runNotificationServiceTests() {
         const targetPath = decodeURIComponent(match[1]);
 
         // Check if collection list query
-        if (targetPath === 'users' || targetPath.endsWith('/notifications')) {
+        if (targetPath === 'users' || targetPath.endsWith('/notifications') || targetPath === 'broadcast_notifications' || targetPath === 'admin_notifications') {
           const prefix = targetPath + '/';
           const docs: any[] = [];
           for (const [key, val] of store.entries()) {
@@ -373,6 +373,42 @@ export async function runNotificationServiceTests() {
   const finalUnread = await notificationService.getClientUnreadCount('client-active-1', ctx);
   assert.strictEqual(finalUnread.unreadCount, 0);
   console.log('  ✓ Test 18 Passed: Mark all as read resets client unread count to zero');
+
+  // Test 19: Admin retrieves notification history (both broadcast and individual notifications)
+  const historyResult = await notificationService.getNotificationHistory({}, ctx);
+  assert.strictEqual(historyResult.total, 2);
+  assert.strictEqual(historyResult.history.length, 2);
+  // Must be sorted newest first (bcast was sent after indResult)
+  assert.strictEqual(historyResult.history[0].target, 'ALL_ACTIVE');
+  assert.strictEqual(historyResult.history[0].recipientUid, null);
+  assert.strictEqual(historyResult.history[0].recipientCount, 2);
+  assert.strictEqual(historyResult.history[0].title, 'Annual Maintenance Downtime');
+  assert.strictEqual(historyResult.history[0].status, 'COMPLETED');
+
+  assert.strictEqual(historyResult.history[1].target, 'INDIVIDUAL');
+  assert.strictEqual(historyResult.history[1].recipientUid, 'client-active-1');
+  assert.strictEqual(historyResult.history[1].recipientCount, 1);
+  assert.strictEqual(historyResult.history[1].title, 'Tax Document Upload Required');
+  assert.strictEqual(historyResult.history[1].status, 'COMPLETED');
+  console.log('  ✓ Test 19 Passed: Notification history returns combined broadcast and individual records sorted newest-first');
+
+  // Test 20: Admin retrieves notification history with limit
+  const pagedHistory = await notificationService.getNotificationHistory({ limit: 1 }, ctx);
+  assert.strictEqual(pagedHistory.total, 2);
+  assert.strictEqual(pagedHistory.history.length, 1);
+  assert.strictEqual(pagedHistory.history[0].title, 'Annual Maintenance Downtime');
+  console.log('  ✓ Test 20 Passed: Notification history properly respects limit parameter');
+
+  // Test 21: Admin retrieves notification history with invalid limit throws BadRequestError
+  await assert.rejects(
+    notificationService.getNotificationHistory({ limit: -5 }, ctx),
+    (err: any) => err instanceof BadRequestError
+  );
+  await assert.rejects(
+    notificationService.getNotificationHistory({ limit: 'invalid' }, ctx),
+    (err: any) => err instanceof BadRequestError
+  );
+  console.log('  ✓ Test 21 Passed: Invalid limit values properly rejected with BadRequestError');
 
   console.log('\n--- All Notification Service Tests Passed Successfully! ---');
 }

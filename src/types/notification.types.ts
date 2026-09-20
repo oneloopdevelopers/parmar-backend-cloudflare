@@ -51,3 +51,37 @@ export interface NotificationListResponse {
 export interface UnreadCountResponse {
   unreadCount: number;
 }
+
+export interface AdminNotificationHistoryItem {
+  id: string;
+  target: NotificationTarget;
+  recipientUid: string | null;
+  title: string;
+  message: string;
+  category: NotificationCategory;
+  recipientCount: number;
+  status: string;
+  createdAt: string;
+  createdByUid: string;
+}
+
+export interface AdminNotificationHistoryQuery {
+  limit?: string | number;
+}
+
+export interface AdminNotificationHistoryResult {
+  history: AdminNotificationHistoryItem[];
+  total: number;
+}
+
+export interface AdminNotificationHistoryResponse {
+  success: boolean;
+  message: string;
+  data: {
+    history: AdminNotificationHistoryItem[];
+    total: number;
+  };
+  history: AdminNotificationHistoryItem[];
+  total: number;
+  timestamp: string;
+}
