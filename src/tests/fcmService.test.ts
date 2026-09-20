@@ -385,12 +385,19 @@ export async function runFcmServiceTests() {
   assert.strictEqual(sendSuccess.success, true);
   assert.strictEqual(sendSuccess.isInvalidToken, false);
   assert.strictEqual(fcmCapturedPayload?.message?.token, validToken);
-  assert.strictEqual(fcmCapturedPayload?.message?.notification?.title, 'Tax Document Ready');
-  assert.strictEqual(fcmCapturedPayload?.message?.notification?.body, 'Your ITR-V has been uploaded.');
+  assert.strictEqual(fcmCapturedPayload?.message?.notification, undefined, 'FCM message must NOT have top-level notification object');
+  assert.ok(fcmCapturedPayload?.message?.data, 'FCM message must contain data object');
+  assert.strictEqual(typeof fcmCapturedPayload?.message?.data?.notificationId, 'string');
   assert.strictEqual(fcmCapturedPayload?.message?.data?.notificationId, 'notif_100');
+  assert.strictEqual(typeof fcmCapturedPayload?.message?.data?.category, 'string');
   assert.strictEqual(fcmCapturedPayload?.message?.data?.category, 'DOCUMENT_UPDATE');
+  assert.strictEqual(typeof fcmCapturedPayload?.message?.data?.title, 'string');
+  assert.strictEqual(fcmCapturedPayload?.message?.data?.title, 'Tax Document Ready');
+  assert.strictEqual(typeof fcmCapturedPayload?.message?.data?.message, 'string');
+  assert.strictEqual(fcmCapturedPayload?.message?.data?.message, 'Your ITR-V has been uploaded.');
+  assert.strictEqual(fcmCapturedPayload?.message?.android?.priority, 'HIGH');
   assert.strictEqual(fcmCapturedPayload?.message?.android?.notification?.channel_id, 'client_portal_notifications');
-  console.log('  ✓ Test 10 Passed: sendFcmMessage formats HTTP v1 payload with canonical channel client_portal_notifications');
+  console.log('  ✓ Test 10 Passed: sendFcmMessage formats HTTP v1 DATA-ONLY payload with canonical channel client_portal_notifications');
 
   // Test 11: Single FCM send invalid token detection
   const sendInvalid = await fcmService.sendFcmMessage(

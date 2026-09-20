@@ -371,10 +371,18 @@ export async function runFcmWorkerTests() {
   assert.strictEqual(jsonAdminInd.data.delivery.tokensAttempted >= 1, true);
   assert.strictEqual(jsonAdminInd.data.delivery.tokensDelivered >= 1, true);
   assert.strictEqual(fcmMessagesSent.length >= 1, true);
-  assert.strictEqual(fcmMessagesSent[0].message.notification.title, 'ITR Assessment Complete');
+  assert.strictEqual(fcmMessagesSent[0].message.notification, undefined, 'Individual FCM payload must NOT contain top-level notification');
+  assert.ok(fcmMessagesSent[0].message.data, 'Individual FCM payload must contain data object');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.notificationId, 'string');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.category, 'string');
+  assert.strictEqual(fcmMessagesSent[0].message.data.category, 'DOCUMENT_UPDATE');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.title, 'string');
+  assert.strictEqual(fcmMessagesSent[0].message.data.title, 'ITR Assessment Complete');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.message, 'string');
+  assert.strictEqual(fcmMessagesSent[0].message.data.message, 'Your ITR assessment order is available in your document portal.');
+  assert.strictEqual(fcmMessagesSent[0].message.android.priority, 'HIGH');
   assert.strictEqual(fcmMessagesSent[0].message.android.notification.channel_id, 'client_portal_notifications');
-  assert.strictEqual(fcmMessagesSent[0].message.android.notification.click_action, 'OPEN_NOTIFICATIONS');
-  console.log('✓ Test 7 Passed: POST /api/admin/notifications (INDIVIDUAL) dispatches FCM with canonical channel client_portal_notifications');
+  console.log('✓ Test 7 Passed: POST /api/admin/notifications (INDIVIDUAL) dispatches DATA-ONLY FCM with canonical channel client_portal_notifications');
 
   // =========================================================================
   // TEST 8: Admin sends ALL_ACTIVE broadcast notification and triggers FCM pushes
@@ -400,7 +408,19 @@ export async function runFcmWorkerTests() {
   assert.strictEqual(jsonAdminBcast.data.target, 'ALL_ACTIVE');
   assert.strictEqual(jsonAdminBcast.data.recipientCount >= 2, true);
   assert.ok(jsonAdminBcast.data.delivery, 'Broadcast delivery stats must be returned');
-  console.log('✓ Test 8 Passed: POST /api/admin/notifications (ALL_ACTIVE) broadcasts FCM pushes across all active clients');
+  assert.strictEqual(fcmMessagesSent.length >= 1, true);
+  assert.strictEqual(fcmMessagesSent[0].message.notification, undefined, 'ALL_ACTIVE FCM payload must NOT contain top-level notification');
+  assert.ok(fcmMessagesSent[0].message.data, 'ALL_ACTIVE FCM payload must contain data object');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.notificationId, 'string');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.category, 'string');
+  assert.strictEqual(fcmMessagesSent[0].message.data.category, 'REMINDER');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.title, 'string');
+  assert.strictEqual(fcmMessagesSent[0].message.data.title, 'Tax Season Filing Deadline');
+  assert.strictEqual(typeof fcmMessagesSent[0].message.data.message, 'string');
+  assert.strictEqual(fcmMessagesSent[0].message.data.message, 'Kindly submit all investment proofs before March 31st.');
+  assert.strictEqual(fcmMessagesSent[0].message.android.priority, 'HIGH');
+  assert.strictEqual(fcmMessagesSent[0].message.android.notification.channel_id, 'client_portal_notifications');
+  console.log('✓ Test 8 Passed: POST /api/admin/notifications (ALL_ACTIVE) broadcasts DATA-ONLY FCM pushes across all active clients');
 
   // =========================================================================
   // TEST 9: Health endpoint lists new FCM routes

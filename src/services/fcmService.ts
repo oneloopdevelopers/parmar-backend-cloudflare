@@ -267,23 +267,23 @@ export class FcmService {
       const targetProjectId = ctx.projectId || saProjectId || 'document-portal-d2b6d';
       const fcmUrl = `https://fcm.googleapis.com/v1/projects/${targetProjectId}/messages:send`;
 
-      // Safe HTTP v1 message structure compliant with Android FcmPayloadParser
+      // Safe HTTP v1 DATA-ONLY message structure compliant with Android FcmPayloadParser.
+      // Top-level notification object is intentionally omitted so Google Play Services
+      // delegates background/killed delivery directly to DocPortalFirebaseMessagingService.onMessageReceived(),
+      // allowing SystemNotificationBuilder to handle explicit PendingIntent navigation.
       const fcmMessage = {
         message: {
           token: token,
-          notification: {
-            title: payload.title,
-            body: payload.message
-          },
           data: {
-            notificationId: payload.notificationId,
-            category: payload.category
+            notificationId: String(payload.notificationId || '').trim(),
+            category: String(payload.category || 'GENERAL').trim(),
+            title: String(payload.title || '').trim(),
+            message: String(payload.message || '').trim()
           },
           android: {
             priority: 'HIGH',
             notification: {
-              channel_id: CANONICAL_ANDROID_NOTIFICATION_CHANNEL_ID,
-              click_action: 'OPEN_NOTIFICATIONS'
+              channel_id: CANONICAL_ANDROID_NOTIFICATION_CHANNEL_ID
             }
           }
         }
