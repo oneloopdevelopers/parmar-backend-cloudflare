@@ -255,6 +255,10 @@ export class FirestoreRestService {
         }
       });
 
+      if (response.status === 404) {
+        return { documents: [] };
+      }
+
       if (!response.ok) {
         const errorBody = await response.text();
         logger.error(`Firestore REST listDocuments failed with status ${response.status} for collection ${collection}:`, errorBody);

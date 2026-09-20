@@ -24,6 +24,7 @@ export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 export const GOOGLE_DRIVE_READ_SCOPE = 'https://www.googleapis.com/auth/drive.readonly';
 export const GOOGLE_DRIVE_WRITE_SCOPE = 'https://www.googleapis.com/auth/drive';
 export const GOOGLE_DRIVE_SCOPE = GOOGLE_DRIVE_READ_SCOPE;
+export const FCM_MESSAGING_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
 export const DEFAULT_SCOPES = [
   'https://www.googleapis.com/auth/datastore',
   'https://www.googleapis.com/auth/drive'

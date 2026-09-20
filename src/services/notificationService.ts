@@ -5,6 +5,7 @@
  */
 
 import { firestoreRestService } from './firestoreRestService';
+import { fcmService } from './fcmService';
 import {
   NotificationCategory,
   NotificationTarget,
@@ -14,6 +15,7 @@ import {
   NotificationListResponse,
   UnreadCountResponse
 } from '../types/notification.types';
+import { FcmDeliveryStats } from '../types/fcm.types';
 import {
   BadRequestError,
   NotFoundError,
@@ -498,8 +500,8 @@ export class NotificationService {
     input: CreateNotificationInput,
     ctx: NotificationServiceContext
   ): Promise<
-    | { target: 'INDIVIDUAL'; notification: NotificationRecord }
-    | { target: 'ALL_ACTIVE'; broadcastId: string; recipientCount: number }
+    | { target: 'INDIVIDUAL'; notification: NotificationRecord; delivery: FcmDeliveryStats }
+    | { target: 'ALL_ACTIVE'; broadcastId: string; recipientCount: number; delivery: FcmDeliveryStats }
   > {
     const target = validateNotificationTarget(input.target);
     const title = validateNotificationTitle(input.title);
@@ -555,6 +557,29 @@ export class NotificationService {
 
       logger.info(`NotificationService: Created INDIVIDUAL notification ${notifId} for client ${recipientUid} by admin ${adminUid}`);
 
+      // Dispatch FCM Push Notifications to all active device tokens for the recipient
+      let delivery: FcmDeliveryStats = {
+        tokensAttempted: 0,
+        tokensDelivered: 0,
+        tokensRemoved: 0
+      };
+
+      try {
+        delivery = await fcmService.dispatchFcmToUserTokens(
+          recipientUid,
+          {
+            notificationId: notifId,
+            category,
+            title,
+            message,
+            metadata
+          },
+          ctx
+        );
+      } catch (fcmErr) {
+        logger.error('NotificationService: Non-blocking FCM push failure for individual notification:', fcmErr);
+      }
+
       const record: NotificationRecord = {
         id: notifId,
         recipientUid,
@@ -570,7 +595,8 @@ export class NotificationService {
 
       return {
         target: 'INDIVIDUAL',
-        notification: record
+        notification: record,
+        delivery
       };
     }
 
@@ -663,10 +689,35 @@ export class NotificationService {
       `NotificationService: Broadcast ${broadcastId} dispatched to ${activeClients.length} active client(s) by admin ${adminUid}`
     );
 
+    // Dispatch FCM Push Notifications to all active clients' registered device tokens
+    let delivery: FcmDeliveryStats = {
+      tokensAttempted: 0,
+      tokensDelivered: 0,
+      tokensRemoved: 0
+    };
+
+    try {
+      const clientUids = activeClients.map((c) => c.id);
+      delivery = await fcmService.dispatchBroadcastFcm(
+        clientUids,
+        {
+          notificationId: broadcastId,
+          category,
+          title,
+          message,
+          metadata
+        },
+        ctx
+      );
+    } catch (fcmErr) {
+      logger.error('NotificationService: Non-blocking FCM push failure for broadcast notification:', fcmErr);
+    }
+
     return {
       target: 'ALL_ACTIVE',
       broadcastId,
-      recipientCount: activeClients.length
+      recipientCount: activeClients.length,
+      delivery
     };
   }
 }

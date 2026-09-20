@@ -32,6 +32,7 @@ import {
   decryptDocumentPassword
 } from './services/documentPasswordCrypto';
 import { notificationService } from './services/notificationService';
+import { fcmService } from './services/fcmService';
 
 export interface WorkerVariables {
   verifiedUid: string;
@@ -373,7 +374,9 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         notificationMarkRead: 'PATCH /api/notifications/:notificationId/read (Protected - Requires Bearer <Firebase ID Token>)',
         notificationsMarkAllRead: 'POST /api/notifications/mark-all-read (Protected - Requires Bearer <Firebase ID Token>)',
         notificationDismiss: 'DELETE /api/notifications/:notificationId (Protected - Requires Bearer <Firebase ID Token>)',
-        adminNotificationCreate: 'POST /api/admin/notifications (Protected - Requires Admin Bearer <Firebase ID Token>)'
+        adminNotificationCreate: 'POST /api/admin/notifications (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        fcmTokenRegister: 'POST /api/profile/fcm-token (Protected - Requires Bearer <Firebase ID Token>)',
+        fcmTokenUnregister: 'DELETE /api/profile/fcm-token (Protected - Requires Bearer <Firebase ID Token>)'
       }
     };
 
@@ -892,6 +895,102 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       panNumber: clientProfile.panNumber,
       role: clientProfile.role,
       status: clientProfile.status
+    }, 200);
+  });
+
+  // ==========================================
+  // ROUTE 3B: POST /api/profile/fcm-token (Client Protected)
+  // Registers or updates device FCM token in users/{verifiedUid}/fcmTokens/{sha256(token)}
+  // Strictly derives client UID from verified auth token and rejects forbidden identity keys.
+  // ==========================================
+  app.post('/api/profile/fcm-token', requireAuth, async (c) => {
+    const callerUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new BadRequestError('Request body must be a valid JSON object.');
+    }
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestError('Request body must be a valid JSON object.');
+    }
+
+    // Zero-Trust Guard: Reject any attempt to supply UID or ownership keys
+    for (const key of Object.keys(body)) {
+      const normalized = key.toLowerCase().replace(/[-_]/g, '');
+      if (FORBIDDEN_CLIENT_IDENTITY_KEYS.includes(normalized)) {
+        logger.warn(`Security violation: Client supplied forbidden field '${key}' in FCM token registration body`);
+        throw new BadRequestError(
+          `Security violation: Field '${key}' cannot be supplied in body. Identity is strictly authoritative.`
+        );
+      }
+    }
+
+    const result = await fcmService.registerFcmToken(callerUid, body, {
+      projectId,
+      serviceAccountJson
+    });
+
+    return c.json({
+      success: true,
+      message: result.message,
+      timestamp: new Date().toISOString()
+    }, 200);
+  });
+
+  // ==========================================
+  // ROUTE 3C: DELETE /api/profile/fcm-token (Client Protected)
+  // Unregisters/removes device FCM token from users/{verifiedUid}/fcmTokens/{sha256(token)}
+  // Idempotent and strictly scoped to caller's verified UID.
+  // ==========================================
+  app.delete('/api/profile/fcm-token', requireAuth, async (c) => {
+    const callerUid = c.get('verifiedUid');
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    let body: any;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new BadRequestError('Request body must be a valid JSON object.');
+    }
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestError('Request body must be a valid JSON object.');
+    }
+
+    // Zero-Trust Guard: Reject any attempt to supply UID or ownership keys
+    for (const key of Object.keys(body)) {
+      const normalized = key.toLowerCase().replace(/[-_]/g, '');
+      if (FORBIDDEN_CLIENT_IDENTITY_KEYS.includes(normalized)) {
+        logger.warn(`Security violation: Client supplied forbidden field '${key}' in FCM token deletion body`);
+        throw new BadRequestError(
+          `Security violation: Field '${key}' cannot be supplied in body. Identity is strictly authoritative.`
+        );
+      }
+    }
+
+    const result = await fcmService.unregisterFcmToken(callerUid, body, {
+      projectId,
+      serviceAccountJson
+    });
+
+    return c.json({
+      success: true,
+      message: result.message,
+      timestamp: new Date().toISOString()
     }, 200);
   });
 
@@ -2060,9 +2159,11 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         message: 'Notification sent successfully.',
         data: {
           target: 'INDIVIDUAL',
-          notification: result.notification
+          notification: result.notification,
+          delivery: result.delivery
         },
         notification: result.notification,
+        delivery: result.delivery,
         timestamp: new Date().toISOString()
       }, 201);
     }
@@ -2073,10 +2174,12 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       data: {
         target: 'ALL_ACTIVE',
         broadcastId: result.broadcastId,
-        recipientCount: result.recipientCount
+        recipientCount: result.recipientCount,
+        delivery: result.delivery
       },
       broadcastId: result.broadcastId,
       recipientCount: result.recipientCount,
+      delivery: result.delivery,
       timestamp: new Date().toISOString()
     }, 201);
   });
