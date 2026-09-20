@@ -25,7 +25,8 @@ import {
   resolveOAuthRedirectUri,
   isGoogleOAuthConfigured,
   createSetupSession,
-  validateAndConsumeSetupToken
+  validateAndConsumeSetupToken,
+  diagnoseGoogleDriveOAuthRefresh
 } from './services/googleOAuthService';
 import {
   encryptDocumentPassword,
@@ -516,6 +517,48 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
   app.post('/api/oauth/google/init-setup', handleInitSetup);
   app.get('/api/oauth/google/init-setup', handleInitSetup);
+
+  // ==========================================================
+  // ROUTE: GET /api/oauth/google/diagnose-refresh (Admin Diagnostic Endpoint)
+  // Protected via X-Google-OAuth-Setup-Key header.
+  // Performs safe, non-mutating test refresh without exposing tokens or credentials.
+  // ==========================================================
+  app.get('/api/oauth/google/diagnose-refresh', async (c) => {
+    const expectedSetupKey =
+      (c.env?.GOOGLE_OAUTH_SETUP_KEY as string) ||
+      (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_SETUP_KEY : undefined);
+
+    if (!expectedSetupKey || !expectedSetupKey.trim()) {
+      logger.error('OAuth diagnosis rejected: GOOGLE_OAUTH_SETUP_KEY is not configured in Worker secrets.');
+      throw new AppError(
+        500,
+        'Server configuration error: GOOGLE_OAUTH_SETUP_KEY secret is missing.',
+        'SERVER_CONFIG_ERROR'
+      );
+    }
+
+    const providedKey =
+      c.req.header('x-google-oauth-setup-key') ||
+      c.req.header('X-Google-OAuth-Setup-Key');
+
+    if (!providedKey || !timingSafeEqual(providedKey.trim(), expectedSetupKey.trim())) {
+      logger.warn('Unauthorized attempt to access /api/oauth/google/diagnose-refresh with missing or invalid setup key.');
+      throw new UnauthorizedError('Unauthorized: Missing or invalid X-Google-OAuth-Setup-Key header.');
+    }
+
+    try {
+      const result = await diagnoseGoogleDriveOAuthRefresh(c.env);
+      return c.json(result, 200);
+    } catch (err) {
+      logger.error('Diagnostic endpoint unexpected error:', err instanceof Error ? err.message : String(err));
+      return c.json({
+        success: false,
+        oauthStorageExists: false,
+        decryptionSucceeded: false,
+        message: 'An unexpected internal error occurred during OAuth diagnosis.'
+      }, 500);
+    }
+  });
 
   // ==========================================================
   // ROUTE: GET /api/oauth/google/start (Browser OAuth Initiation)

@@ -616,9 +616,26 @@ export async function refreshGoogleDriveAccessToken(
   }
 
   if (!response.ok) {
-    logger.error(`Google OAuth refresh token exchange failed with HTTP status ${response.status}`);
+    let googleErrorCode = 'unknown_error';
+    let googleErrorDescription = '';
+    try {
+      const rawText = await response.text();
+      try {
+        const errorData = JSON.parse(rawText) as { error?: string; error_description?: string };
+        googleErrorCode = typeof errorData?.error === 'string' ? errorData.error : 'unknown_error';
+        googleErrorDescription = typeof errorData?.error_description === 'string' ? errorData.error_description : '';
+      } catch {
+        googleErrorDescription = rawText.slice(0, 200);
+      }
+    } catch {
+      // ignore parse error
+    }
+
+    logger.error(
+      `Google OAuth refresh token exchange failed: HTTP ${response.status}, error='${googleErrorCode}', description='${googleErrorDescription}'`
+    );
     throw new BadGatewayError(
-      'Google Drive OAuth token refresh failed. Google Drive authorization must be re-authorized.'
+      `Google Drive OAuth token refresh failed (HTTP ${response.status}: ${googleErrorCode}${googleErrorDescription ? ` - ${googleErrorDescription}` : ''}). Google Drive authorization must be re-authorized.`
     );
   }
 
@@ -793,3 +810,176 @@ export async function getGoogleDriveOAuthAccessToken(
 
   return result.accessToken;
 }
+
+export interface GoogleOAuthDiagnosticResult {
+  success: boolean;
+  googleHttpStatus?: number;
+  googleErrorCode?: string;
+  googleErrorDescription?: string;
+  oauthStorageExists: boolean;
+  decryptionSucceeded: boolean;
+  message?: string;
+}
+
+/**
+ * Performs a safe, non-mutating diagnosis of the stored Google Drive OAuth refresh token.
+ * - Confirms whether oauth/googleDrive document exists.
+ * - Attempts decryption of refreshTokenCiphertext without exposing raw plaintext.
+ * - Attempts a single refresh token request to https://oauth2.googleapis.com/token.
+ * - Does NOT update, delete, or re-authorize OAuth credentials.
+ * - Does NOT store or return the newly obtained access token.
+ * - Does NOT expose client_secret, refresh_token, access_token, or encryption keys.
+ */
+export async function diagnoseGoogleDriveOAuthRefresh(
+  env: Env,
+  options?: {
+    customFetch?: typeof fetch;
+  }
+): Promise<GoogleOAuthDiagnosticResult> {
+  const configured = isGoogleOAuthConfigured(env);
+  if (!configured) {
+    return {
+      success: false,
+      oauthStorageExists: false,
+      decryptionSucceeded: false,
+      message: 'Google OAuth is not configured in server environment secrets.'
+    };
+  }
+
+  const clientId =
+    env?.GOOGLE_OAUTH_CLIENT_ID ||
+    (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_CLIENT_ID : undefined)!;
+  const clientSecret =
+    env?.GOOGLE_OAUTH_CLIENT_SECRET ||
+    (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_CLIENT_SECRET : undefined)!;
+  const encryptionKey =
+    env?.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY ||
+    (typeof process !== 'undefined' ? process.env?.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY : undefined)!;
+
+  const projectId =
+    (env?.FIREBASE_PROJECT_ID as string) ||
+    (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
+    'document-portal-d2b6d';
+
+  const serviceAccountJson =
+    env?.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    (typeof process !== 'undefined' ? process.env?.FIREBASE_SERVICE_ACCOUNT_JSON : undefined);
+
+  if (!serviceAccountJson) {
+    return {
+      success: false,
+      oauthStorageExists: false,
+      decryptionSucceeded: false,
+      message: 'FIREBASE_SERVICE_ACCOUNT_JSON is missing from server configuration.'
+    };
+  }
+
+  // 1. Fetch oauth/googleDrive from Firestore
+  let doc: Record<string, unknown> | null;
+  try {
+    doc = await firestoreRestService.getDocument('oauth', 'googleDrive', {
+      projectId,
+      serviceAccountJson,
+      customFetch: options?.customFetch
+    });
+  } catch (err) {
+    logger.error('Diagnostic failed to load oauth/googleDrive from Firestore:', err instanceof Error ? err.message : String(err));
+    return {
+      success: false,
+      oauthStorageExists: false,
+      decryptionSucceeded: false,
+      message: 'Failed to read oauth/googleDrive document from Firestore storage.'
+    };
+  }
+
+  if (!doc || !doc.refreshTokenCiphertext || typeof doc.refreshTokenCiphertext !== 'string') {
+    return {
+      success: false,
+      oauthStorageExists: false,
+      decryptionSucceeded: false,
+      message: 'Google Drive OAuth record not found in Firestore.'
+    };
+  }
+
+  // 2. Decrypt refreshTokenCiphertext
+  let refreshToken: string;
+  try {
+    refreshToken = await decryptRefreshToken(doc.refreshTokenCiphertext, encryptionKey);
+  } catch (err) {
+    logger.error('Diagnostic decryption failed:', err instanceof Error ? err.message : String(err));
+    return {
+      success: false,
+      oauthStorageExists: true,
+      decryptionSucceeded: false,
+      message: 'Stored refresh token could not be decrypted with current encryption key.'
+    };
+  }
+
+  // 3. Attempt ONE refresh request to Google's token endpoint
+  const fetchImpl = options?.customFetch || fetch;
+  const body = new URLSearchParams({
+    client_id: clientId.trim(),
+    client_secret: clientSecret.trim(),
+    refresh_token: refreshToken.trim(),
+    grant_type: 'refresh_token'
+  });
+
+  let response: Response;
+  try {
+    response = await fetchImpl('https://oauth2.googleapis.com/token', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'Accept': 'application/json'
+      },
+      body: body.toString()
+    });
+  } catch (err) {
+    logger.error('Diagnostic network error communicating with Google OAuth token service:', err instanceof Error ? err.message : String(err));
+    return {
+      success: false,
+      oauthStorageExists: true,
+      decryptionSucceeded: true,
+      message: 'Network failure communicating with Google OAuth token endpoint.'
+    };
+  }
+
+  if (!response.ok) {
+    let googleErrorCode = 'unknown_error';
+    let googleErrorDescription = '';
+    try {
+      const rawText = await response.text();
+      try {
+        const errorData = JSON.parse(rawText) as { error?: string; error_description?: string };
+        googleErrorCode = typeof errorData?.error === 'string' ? errorData.error : 'unknown_error';
+        googleErrorDescription = typeof errorData?.error_description === 'string' ? errorData.error_description : '';
+      } catch {
+        googleErrorDescription = rawText.slice(0, 200);
+      }
+    } catch {
+      // ignore parse errors
+    }
+
+    logger.error(
+      `Google OAuth diagnostic refresh failed: HTTP ${response.status}, error='${googleErrorCode}', description='${googleErrorDescription}'`
+    );
+
+    return {
+      success: false,
+      googleHttpStatus: response.status,
+      googleErrorCode,
+      googleErrorDescription,
+      oauthStorageExists: true,
+      decryptionSucceeded: true
+    };
+  }
+
+  return {
+    success: true,
+    googleHttpStatus: 200,
+    oauthStorageExists: true,
+    decryptionSucceeded: true,
+    message: 'Google OAuth refresh succeeded.'
+  };
+}
+

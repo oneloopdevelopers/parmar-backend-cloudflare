@@ -16,7 +16,9 @@ import {
   validateAndConsumeSetupToken,
   createSetupSession,
   DEFAULT_REDIRECT_URI,
-  resolveOAuthRedirectUri
+  resolveOAuthRedirectUri,
+  diagnoseGoogleDriveOAuthRefresh,
+  GoogleOAuthDiagnosticResult
 } from '../services/googleOAuthService';
 import { createWorkerApp, resolveDriveAuthOptions } from '../worker';
 import { KVNamespace, Env } from '../types/worker.types';
@@ -579,6 +581,210 @@ async function runGoogleOAuthServiceTests() {
     /not a valid absolute URL/
   );
   console.log('✓ Test 12 Passed: resolveOAuthRedirectUri strictly defaults to registered URI and validates HTTPS');
+
+  // -------------------------------------------------------------
+  // Test 13: Google OAuth Refresh Diagnostic & Error Diagnostics
+  // -------------------------------------------------------------
+  console.log('Test 13: Google OAuth Refresh Diagnostic Tests');
+
+  const diagSetupKey = 'super-secret-setup-key-12345';
+  const diagEnv: Env = {
+    FIREBASE_PROJECT_ID: 'document-portal-d2b6d',
+    FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+      project_id: 'document-portal-d2b6d',
+      private_key: 'mock-key',
+      client_email: 'mock-sa@document-portal-d2b6d.iam.gserviceaccount.com'
+    }),
+    GOOGLE_OAUTH_CLIENT_ID: 'test-client-id-123',
+    GOOGLE_OAUTH_CLIENT_SECRET: 'test-client-secret-xyz',
+    GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY: testEncryptionKey,
+    GOOGLE_OAUTH_SETUP_KEY: diagSetupKey
+  };
+
+  const encryptedSampleCiphertext = await encryptRefreshToken(testRefreshToken, testEncryptionKey);
+
+  // 13a: refreshGoogleDriveAccessToken parses Google error JSON response body
+  const mockFetchInvalidGrant: typeof fetch = async () => {
+    return new Response(
+      JSON.stringify({
+        error: 'invalid_grant',
+        error_description: 'Token has been expired or revoked.'
+      }),
+      { status: 400, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+
+  await assert.rejects(
+    async () => {
+      await refreshGoogleDriveAccessToken({
+        clientId: 'test-client-id-123',
+        clientSecret: 'test-client-secret-xyz',
+        refreshToken: testRefreshToken,
+        customFetch: mockFetchInvalidGrant
+      });
+    },
+    (err: any) => {
+      assert.ok(err.message.includes('invalid_grant'), 'Error message should include Google error code');
+      assert.ok(err.message.includes('Token has been expired or revoked'), 'Error message should include error description');
+      return true;
+    }
+  );
+
+  // 13b: diagnoseGoogleDriveOAuthRefresh with invalid_grant
+  const origGetDoc13 = firestoreRestService.getDocument.bind(firestoreRestService);
+  firestoreRestService.getDocument = async (collection: string, docId: string) => {
+    if (collection === 'oauth' && docId === 'googleDrive') {
+      return {
+        provider: 'google-drive',
+        refreshTokenCiphertext: encryptedSampleCiphertext,
+        updatedAt: new Date().toISOString()
+      };
+    }
+    return null;
+  };
+
+  const diagResultInvalidGrant = await diagnoseGoogleDriveOAuthRefresh(diagEnv, {
+    customFetch: mockFetchInvalidGrant
+  });
+
+  assert.strictEqual(diagResultInvalidGrant.success, false);
+  assert.strictEqual(diagResultInvalidGrant.googleHttpStatus, 400);
+  assert.strictEqual(diagResultInvalidGrant.googleErrorCode, 'invalid_grant');
+  assert.strictEqual(diagResultInvalidGrant.googleErrorDescription, 'Token has been expired or revoked.');
+  assert.strictEqual(diagResultInvalidGrant.oauthStorageExists, true);
+  assert.strictEqual(diagResultInvalidGrant.decryptionSucceeded, true);
+
+  // Verify no credentials leaked in stringified result
+  const jsonStrInvalidGrant = JSON.stringify(diagResultInvalidGrant);
+  assert.ok(!jsonStrInvalidGrant.includes(testRefreshToken), 'Diagnostic must never contain refresh token');
+  assert.ok(!jsonStrInvalidGrant.includes('test-client-secret-xyz'), 'Diagnostic must never contain client secret');
+  assert.ok(!jsonStrInvalidGrant.includes(testEncryptionKey), 'Diagnostic must never contain encryption key');
+
+  // 13c: diagnoseGoogleDriveOAuthRefresh with invalid_client
+  const mockFetchInvalidClient: typeof fetch = async () => {
+    return new Response(
+      JSON.stringify({
+        error: 'invalid_client',
+        error_description: 'Unauthorized'
+      }),
+      { status: 401, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+
+  const diagResultInvalidClient = await diagnoseGoogleDriveOAuthRefresh(diagEnv, {
+    customFetch: mockFetchInvalidClient
+  });
+  assert.strictEqual(diagResultInvalidClient.success, false);
+  assert.strictEqual(diagResultInvalidClient.googleHttpStatus, 401);
+  assert.strictEqual(diagResultInvalidClient.googleErrorCode, 'invalid_client');
+  assert.strictEqual(diagResultInvalidClient.googleErrorDescription, 'Unauthorized');
+
+  // 13d: diagnoseGoogleDriveOAuthRefresh with successful refresh
+  const mockFetchSuccess: typeof fetch = async () => {
+    return new Response(
+      JSON.stringify({
+        access_token: 'ya29.diagnostic_new_access_token',
+        expires_in: 3600,
+        token_type: 'Bearer'
+      }),
+      { status: 200, headers: { 'Content-Type': 'application/json' } }
+    );
+  };
+
+  const diagResultSuccess = await diagnoseGoogleDriveOAuthRefresh(diagEnv, {
+    customFetch: mockFetchSuccess
+  });
+  assert.strictEqual(diagResultSuccess.success, true);
+  assert.strictEqual(diagResultSuccess.googleHttpStatus, 200);
+  assert.strictEqual(diagResultSuccess.oauthStorageExists, true);
+  assert.strictEqual(diagResultSuccess.decryptionSucceeded, true);
+  assert.strictEqual(diagResultSuccess.message, 'Google OAuth refresh succeeded.');
+  // Confirm newly minted access token is NOT exposed
+  assert.ok(!JSON.stringify(diagResultSuccess).includes('ya29.diagnostic_new_access_token'), 'Must not return access token');
+
+  // 13e: diagnoseGoogleDriveOAuthRefresh with missing OAuth storage
+  firestoreRestService.getDocument = async () => null;
+  const diagResultMissingStorage = await diagnoseGoogleDriveOAuthRefresh(diagEnv, {
+    customFetch: mockFetchSuccess
+  });
+  assert.strictEqual(diagResultMissingStorage.success, false);
+  assert.strictEqual(diagResultMissingStorage.oauthStorageExists, false);
+  assert.strictEqual(diagResultMissingStorage.decryptionSucceeded, false);
+
+  // 13f: diagnoseGoogleDriveOAuthRefresh with malformed Google response
+  firestoreRestService.getDocument = async (collection: string, docId: string) => {
+    if (collection === 'oauth' && docId === 'googleDrive') {
+      return {
+        provider: 'google-drive',
+        refreshTokenCiphertext: encryptedSampleCiphertext,
+        updatedAt: new Date().toISOString()
+      };
+    }
+    return null;
+  };
+  const mockFetchMalformed: typeof fetch = async () => {
+    return new Response('<html>502 Bad Gateway from Proxy</html>', {
+      status: 502,
+      headers: { 'Content-Type': 'text/html' }
+    });
+  };
+  const diagResultMalformed = await diagnoseGoogleDriveOAuthRefresh(diagEnv, {
+    customFetch: mockFetchMalformed
+  });
+  assert.strictEqual(diagResultMalformed.success, false);
+  assert.strictEqual(diagResultMalformed.googleHttpStatus, 502);
+  assert.strictEqual(diagResultMalformed.googleErrorCode, 'unknown_error');
+  assert.ok(diagResultMalformed.googleErrorDescription?.includes('502 Bad Gateway'));
+
+  // 13g: HTTP endpoint GET /api/oauth/google/diagnose-refresh authentication checks
+  // Missing header -> 401
+  const resNoAuth = await app.request(
+    new Request('https://backend.example.com/api/oauth/google/diagnose-refresh'),
+    undefined,
+    diagEnv
+  );
+  assert.strictEqual(resNoAuth.status, 401);
+
+  // Invalid key -> 401
+  const resInvalidAuth = await app.request(
+    new Request('https://backend.example.com/api/oauth/google/diagnose-refresh', {
+      headers: { 'X-Google-OAuth-Setup-Key': 'wrong-key' }
+    }),
+    undefined,
+    diagEnv
+  );
+  assert.strictEqual(resInvalidAuth.status, 401);
+
+  // Valid key -> returns JSON diagnostic payload safely
+  const origGlobalFetch = globalThis.fetch;
+  try {
+    globalThis.fetch = mockFetchInvalidGrant;
+    const resValidAuth = await app.request(
+      new Request('https://backend.example.com/api/oauth/google/diagnose-refresh', {
+        headers: { 'X-Google-OAuth-Setup-Key': diagSetupKey }
+      }),
+      undefined,
+      diagEnv
+    );
+    assert.strictEqual(resValidAuth.status, 200);
+    const body = (await resValidAuth.json()) as GoogleOAuthDiagnosticResult;
+    assert.strictEqual(body.success, false);
+    assert.strictEqual(body.googleHttpStatus, 400);
+    assert.strictEqual(body.googleErrorCode, 'invalid_grant');
+    assert.strictEqual(body.googleErrorDescription, 'Token has been expired or revoked.');
+    assert.strictEqual(body.oauthStorageExists, true);
+    assert.strictEqual(body.decryptionSucceeded, true);
+
+    const bodyStr = JSON.stringify(body);
+    assert.ok(!bodyStr.includes(testRefreshToken));
+    assert.ok(!bodyStr.includes('test-client-secret-xyz'));
+    assert.ok(!bodyStr.includes(testEncryptionKey));
+  } finally {
+    globalThis.fetch = origGlobalFetch;
+    firestoreRestService.getDocument = origGetDoc13;
+  }
+
+  console.log('✓ Test 13 Passed: Google OAuth Refresh Diagnostic successfully tested across all error & success scenarios');
 
   console.log('\n--- All Google OAuth 2.0 Backend Service Tests Passed! ---\n');
 }
