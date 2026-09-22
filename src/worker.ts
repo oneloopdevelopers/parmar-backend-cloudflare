@@ -367,6 +367,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         driveTest: 'GET /api/drive/test (Protected - Requires Bearer <Firebase ID Token>)',
         adminClientsList: 'GET /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        adminClientStatusUpdate: 'PATCH /api/admin/clients/:clientId/status (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentsList: 'GET /api/admin/clients/:clientId/documents (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentUpload: 'POST /api/admin/clients/:clientId/documents/upload (Protected - Requires Admin Bearer <Firebase ID Token>)',
@@ -1624,6 +1625,56 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       },
       timestamp: new Date().toISOString()
     }, 201);
+  });
+
+  // ==========================================
+  // ROUTE 8B: PATCH /api/admin/clients/:clientId/status (Protected - Admin Only)
+  // Updates client account status to ACTIVE or INACTIVE.
+  // ==========================================
+  app.patch('/api/admin/clients/:clientId/status', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const rawClientId = c.req.param('clientId');
+
+    if (!rawClientId || typeof rawClientId !== 'string' || !rawClientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+
+    const clientId = rawClientId.trim();
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new BadRequestError('Invalid JSON request body.');
+    }
+
+    if (!body || typeof body !== 'object' || Array.isArray(body)) {
+      throw new BadRequestError('Request body must be a JSON object.');
+    }
+
+    const requestedStatus = (body as Record<string, unknown>).status;
+    if (requestedStatus !== 'ACTIVE' && requestedStatus !== 'INACTIVE') {
+      throw new BadRequestError("Invalid status. Field 'status' must be either 'ACTIVE' or 'INACTIVE'.");
+    }
+
+    logger.info(`Worker: Processing PATCH /api/admin/clients/${clientId}/status to '${requestedStatus}' by admin UID: ${adminUid}`);
+
+    const result = await adminClientService.updateClientStatus(
+      clientId,
+      requestedStatus,
+      {
+        projectId,
+        serviceAccountJson
+      }
+    );
+
+    return c.json(result, 200);
   });
 
   // ==========================================

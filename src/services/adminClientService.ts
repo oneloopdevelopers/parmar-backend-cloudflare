@@ -7,7 +7,8 @@ import {
   CreateClientResponse,
   AdminClientDocumentItem,
   AdminClientUploadFolderInfo,
-  AdminClientDocumentsResponse
+  AdminClientDocumentsResponse,
+  UpdateClientStatusResponse
 } from '../types/admin.types';
 import { DriveFileDetails } from '../types';
 import {
@@ -637,6 +638,99 @@ export class AdminClientService {
       folderType: 'pan_root',
       uploaderType: 'administrator',
       uploaderName: 'Administrator'
+    };
+  }
+
+  /**
+   * Updates a client's account status between 'ACTIVE' and 'INACTIVE'.
+   *
+   * Target & Scope Rules:
+   * 1. Target user document users/{clientId} must exist.
+   * 2. Target user must have role === 'client' (administrators cannot be modified).
+   * 3. Status must be strictly 'ACTIVE' or 'INACTIVE'.
+   * 4. Only 'status' and 'updatedAt' fields are modified in Firestore users/{clientId}.
+   *    (name, email, phone, panNumber, driveFolderId, role, createdAt, passwords, and tokens are preserved untouched).
+   * 5. If requested status matches the client's current status, the unnecessary Firestore write is skipped.
+   */
+  public async updateClientStatus(
+    clientId: string,
+    targetStatus: 'ACTIVE' | 'INACTIVE',
+    ctx: {
+      projectId: string;
+      serviceAccountJson: string;
+      customFetch?: typeof fetch;
+    }
+  ): Promise<UpdateClientStatusResponse> {
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+
+    const cleanClientId = clientId.trim();
+
+    if (targetStatus !== 'ACTIVE' && targetStatus !== 'INACTIVE') {
+      throw new BadRequestError("Invalid status. Field 'status' must be either 'ACTIVE' or 'INACTIVE'.");
+    }
+
+    // Step 1: Retrieve user profile from Firestore
+    const userDoc = await firestoreRestService.getDocument('users', cleanClientId, {
+      projectId: ctx.projectId,
+      serviceAccountJson: ctx.serviceAccountJson,
+      customFetch: ctx.customFetch
+    });
+
+    if (!userDoc) {
+      logger.warn(`AdminClientService: Client profile not found for UID '${cleanClientId}'`);
+      throw new NotFoundError(`Client with UID '${cleanClientId}' not found.`);
+    }
+
+    // Step 2: Role validation - Target must be a client (reject admin or any other non-client profile)
+    if (userDoc.role !== 'client') {
+      logger.warn(`AdminClientService: Status update rejected. User '${cleanClientId}' has non-client role '${userDoc.role}'`);
+      throw new BadRequestError(`Target user '${cleanClientId}' is not a client. Administrator statuses cannot be modified.`);
+    }
+
+    // Step 3: Check current status - skip write if identical
+    const currentCanonicalStatus: 'ACTIVE' | 'INACTIVE' = (
+      typeof userDoc.status === 'string' && userDoc.status.toLowerCase().trim() === 'inactive'
+    )
+      ? 'INACTIVE'
+      : 'ACTIVE';
+
+    if (currentCanonicalStatus === targetStatus) {
+      logger.info(
+        `AdminClientService: Client '${cleanClientId}' status is already '${targetStatus}'. Skipping Firestore write.`
+      );
+      return {
+        success: true,
+        clientId: cleanClientId,
+        status: targetStatus
+      };
+    }
+
+    // Step 4: Perform safe, focused Firestore update (only status and updatedAt)
+    const nowIso = new Date().toISOString();
+    const firestoreStatusValue = targetStatus === 'ACTIVE' ? 'active' : 'inactive';
+
+    const updatedData: Record<string, unknown> = {
+      ...userDoc,
+      status: firestoreStatusValue,
+      updatedAt: nowIso
+    };
+
+    await firestoreRestService.setDocument('users', cleanClientId, updatedData, {
+      projectId: ctx.projectId,
+      serviceAccountJson: ctx.serviceAccountJson,
+      customFetch: ctx.customFetch
+    });
+
+    logger.info(
+      `AdminClientService: Successfully changed client '${cleanClientId}' status from '${currentCanonicalStatus}' to '${targetStatus}'`
+    );
+
+    return {
+      success: true,
+      clientId: cleanClientId,
+      status: targetStatus
     };
   }
 }

@@ -66,3 +66,9 @@ export interface AdminClientDocumentsResponse {
   total: number;
 }
 
+export interface UpdateClientStatusResponse {
+  success: true;
+  clientId: string;
+  status: 'ACTIVE' | 'INACTIVE';
+}
+

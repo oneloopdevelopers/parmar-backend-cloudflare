@@ -136,6 +136,7 @@ export async function runAdminEndpointsTests() {
   const deletedPasswordDocIds: string[] = [];
   let simulateDriveDeleteFailure = false;
   let simulateFirestorePasswordDeleteFailure = false;
+  let firestoreUserPatchCount = 0;
 
   // Seed document password metadata for doc-pan-root-1
   memoryDocumentPasswords.set('doc-pan-root-1', {
@@ -218,13 +219,23 @@ export async function runAdminEndpointsTests() {
         return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       if (init?.method === 'PATCH') {
+        firestoreUserPatchCount++;
         if (failAtStep === 'firestore') {
           return new Response(JSON.stringify({ error: { message: 'Firestore simulated write failure' } }), { status: 500 });
         }
         const body = JSON.parse(init.body as string);
-        const saved: Record<string, any> = {};
+        const existing = memoryUsers.get(uid) || {};
+        const saved: Record<string, any> = { ...existing };
         for (const [k, v] of Object.entries(body.fields || {})) {
-          saved[k] = (v as any).stringValue;
+          if (v && typeof v === 'object') {
+            if ('stringValue' in (v as any)) saved[k] = (v as any).stringValue;
+            else if ('booleanValue' in (v as any)) saved[k] = (v as any).booleanValue;
+            else if ('integerValue' in (v as any)) saved[k] = Number((v as any).integerValue);
+            else if ('timestampValue' in (v as any)) saved[k] = (v as any).timestampValue;
+            else saved[k] = v;
+          } else {
+            saved[k] = v;
+          }
         }
         memoryUsers.set(uid, saved);
         return new Response(JSON.stringify({ fields: body.fields }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -1973,7 +1984,269 @@ export async function runAdminEndpointsTests() {
       console.log('✓ Test 23 Passed: Missing password metadata handled gracefully (200, no-op cleanup)');
     }
 
-    console.log('\n--- All STEP 26A & 26D Admin Client and Document API Tests Passed Successfully! ---\n');
+    // =========================================================================
+    // STEP 26E: CLIENT ACTIVE/INACTIVE ACCOUNT STATUS MANAGEMENT TESTS
+    // =========================================================================
+
+    // Test 24: Unauthenticated request is rejected (401)
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 401, 'Unauthenticated status update request must return 401');
+      console.log('✓ Test 24 Passed: Unauthenticated request rejected (401)');
+    }
+
+    // Test 25: Non-admin request is rejected (403)
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-client-nonadmin'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Non-admin status update request must return 403');
+      console.log('✓ Test 25 Passed: Non-admin request rejected (403)');
+    }
+
+    // Test 26: Inactive admin request is rejected (403)
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-inactive'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Inactive admin status update request must return 403');
+      console.log('✓ Test 26 Passed: Inactive admin request rejected (403)');
+    }
+
+    // Test 27: Invalid status values are rejected (400)
+    {
+      const invalidStatuses = ['PENDING', 'ACTIVE_NOW', 'active', 'inactive', 'SUSPENDED', '', 123, null, false, ['ACTIVE']];
+      for (const invalidStatus of invalidStatuses) {
+        const res = await app.fetch(
+          new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: 'Bearer token-admin-valid'
+            },
+            body: JSON.stringify({ status: invalidStatus })
+          }),
+          workerEnv
+        );
+        assert.strictEqual(res.status, 400, `Invalid status value '${JSON.stringify(invalidStatus)}' must return 400`);
+      }
+      console.log('✓ Test 27 Passed: Invalid status values rejected safely (400)');
+    }
+
+    // Test 28: Malformed request bodies rejected (400)
+    {
+      const res1 = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: 'not a json'
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res1.status, 400, 'Non-JSON body must return 400');
+
+      const res2 = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify(['ACTIVE'])
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res2.status, 400, 'Array body must return 400');
+      console.log('✓ Test 28 Passed: Malformed request bodies rejected safely (400)');
+    }
+
+    // Test 29: Client not found returns 404
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/non-existent-client-id/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Non-existent client UID must return 404');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, false);
+      console.log('✓ Test 29 Passed: Client not found returns safe 404');
+    }
+
+    // Test 30: Administrator target cannot be changed (400)
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/admin-user-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Modifying administrator status must return 400');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, false);
+      assert.strictEqual(memoryUsers.get('admin-user-1').status, 'active', 'Admin status must remain active');
+      console.log('✓ Test 30 Passed: Administrator target rejected safely (400)');
+    }
+
+    // Test 31: Admin successfully changes ACTIVE client to INACTIVE (200)
+    {
+      const originalProfile = { ...memoryUsers.get('client-user-1') };
+      assert.strictEqual(originalProfile.status, 'active');
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'Status update to INACTIVE must return 200');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, true);
+      assert.strictEqual(body.clientId, 'client-user-1');
+      assert.strictEqual(body.status, 'INACTIVE');
+
+      // Verify Firestore state
+      const updatedProfile = memoryUsers.get('client-user-1');
+      assert.strictEqual(updatedProfile.status, 'inactive');
+      assert.strictEqual(typeof updatedProfile.updatedAt, 'string');
+      // Verify other fields remain intact
+      assert.strictEqual(updatedProfile.name, originalProfile.name);
+      assert.strictEqual(updatedProfile.email, originalProfile.email);
+      assert.strictEqual(updatedProfile.phone, originalProfile.phone);
+      assert.strictEqual(updatedProfile.panNumber, originalProfile.panNumber);
+      assert.strictEqual(updatedProfile.driveFolderId, originalProfile.driveFolderId);
+      assert.strictEqual(updatedProfile.role, originalProfile.role);
+      assert.strictEqual(updatedProfile.createdAt, originalProfile.createdAt);
+      console.log('✓ Test 31 Passed: Admin successfully changed ACTIVE client to INACTIVE (200)');
+    }
+
+    // Test 32: Admin successfully changes INACTIVE client to ACTIVE (200)
+    {
+      const originalProfile = { ...memoryUsers.get('client-inactive-1') };
+      assert.strictEqual(originalProfile.status, 'inactive');
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-inactive-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'ACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'Status update to ACTIVE must return 200');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, true);
+      assert.strictEqual(body.clientId, 'client-inactive-1');
+      assert.strictEqual(body.status, 'ACTIVE');
+
+      // Verify Firestore state
+      const updatedProfile = memoryUsers.get('client-inactive-1');
+      assert.strictEqual(updatedProfile.status, 'active');
+      assert.strictEqual(typeof updatedProfile.updatedAt, 'string');
+      // Verify other fields remain intact
+      assert.strictEqual(updatedProfile.name, originalProfile.name);
+      assert.strictEqual(updatedProfile.email, originalProfile.email);
+      assert.strictEqual(updatedProfile.phone, originalProfile.phone);
+      assert.strictEqual(updatedProfile.panNumber, originalProfile.panNumber);
+      assert.strictEqual(updatedProfile.driveFolderId, originalProfile.driveFolderId);
+      assert.strictEqual(updatedProfile.role, originalProfile.role);
+      console.log('✓ Test 32 Passed: Admin successfully changed INACTIVE client to ACTIVE (200)');
+    }
+
+    // Test 33: Same-status request skips Firestore write (no-op, 200)
+    {
+      // client-inactive-1 is now ACTIVE
+      const patchCountBefore = firestoreUserPatchCount;
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-inactive-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'ACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'Same status request must return 200');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, true);
+      assert.strictEqual(body.clientId, 'client-inactive-1');
+      assert.strictEqual(body.status, 'ACTIVE');
+
+      assert.strictEqual(firestoreUserPatchCount, patchCountBefore, 'Unnecessary Firestore write must be skipped');
+      console.log('✓ Test 33 Passed: Same-status request skipped Firestore write (200, no-op)');
+    }
+
+    // Test 34: Firestore failure handled safely (500/502)
+    {
+      failAtStep = 'firestore';
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-inactive-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status >= 500, true, 'Firestore failure must return 5xx');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, false);
+      assert.strictEqual(typeof (body.error?.message || body.message), 'string');
+      // Reset failAtStep
+      failAtStep = 'none';
+      console.log('✓ Test 34 Passed: Firestore failure handled safely with 5xx');
+    }
+
+    console.log('\n--- All STEP 26A, 26D & 26E Admin Client and Document API Tests Passed Successfully! ---\n');
   } finally {
     globalThis.fetch = originalFetch;
     clearTokenCache();
