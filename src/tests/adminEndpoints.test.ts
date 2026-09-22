@@ -137,6 +137,27 @@ export async function runAdminEndpointsTests() {
   let simulateDriveDeleteFailure = false;
   let simulateFirestorePasswordDeleteFailure = false;
   let firestoreUserPatchCount = 0;
+  let simulateFcmSendFailure = false;
+  const dispatchedFcmMessages: Array<{ token: string; data: any; fullBody: any }> = [];
+  const memoryFcmTokens = new Map<string, Map<string, any>>();
+
+  // Seed FCM tokens for client-user-1 (2 registered devices)
+  const client1FcmTokens = new Map<string, any>();
+  client1FcmTokens.set('token-hash-phone', {
+    token: 'fcm-device-token-client-1-phone',
+    platform: 'android',
+    appVersion: '1.0.0',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z'
+  });
+  client1FcmTokens.set('token-hash-tablet', {
+    token: 'fcm-device-token-client-1-tablet',
+    platform: 'android',
+    appVersion: '1.0.0',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z'
+  });
+  memoryFcmTokens.set('client-user-1', client1FcmTokens);
 
   // Seed document password metadata for doc-pan-root-1
   memoryDocumentPasswords.set('doc-pan-root-1', {
@@ -191,7 +212,69 @@ export async function runAdminEndpointsTests() {
       );
     }
 
-    // 3. Firestore REST API: users and panIndex
+    // 2.5 FCM HTTP v1 Message Send
+    if (url.includes('fcm.googleapis.com/v1/projects/') && url.includes('/messages:send')) {
+      if (simulateFcmSendFailure) {
+        return new Response(
+          JSON.stringify({ error: { message: 'FCM simulated send failure', status: 'INTERNAL' } }),
+          { status: 500, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      const body = JSON.parse(init?.body as string || '{}');
+      const msg = body.message || {};
+      dispatchedFcmMessages.push({
+        token: msg.token || '',
+        data: msg.data || {},
+        fullBody: body
+      });
+      return new Response(
+        JSON.stringify({ name: 'projects/document-portal-d2b6d/messages/msg_fcm_mock' }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // 3. Firestore REST API: users, fcmTokens, and panIndex
+    // fcmTokens subcollection operations
+    if (url.includes('/fcmTokens')) {
+      const match = url.match(/\/documents\/users\/([^/?]+)\/fcmTokens(?:\/([^/?]+))?/);
+      if (match) {
+        const userUid = decodeURIComponent(match[1]);
+        const tokenDocId = match[2] ? decodeURIComponent(match[2]) : null;
+        const userTokensMap = memoryFcmTokens.get(userUid) || new Map<string, any>();
+
+        if (tokenDocId) {
+          if (init?.method === 'DELETE') {
+            userTokensMap.delete(tokenDocId);
+            return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+          }
+          const docData = userTokensMap.get(tokenDocId);
+          if (!docData) {
+            return new Response(JSON.stringify({ error: { code: 404, message: 'FCM Token document not found' } }), { status: 404 });
+          }
+          const fields: Record<string, any> = {};
+          for (const [k, v] of Object.entries(docData)) {
+            fields[k] = { stringValue: String(v) };
+          }
+          return new Response(JSON.stringify({ fields }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        } else {
+          // List fcmTokens
+          const docs: any[] = [];
+          for (const [tId, tData] of userTokensMap.entries()) {
+            const fields: Record<string, any> = {};
+            for (const [k, v] of Object.entries(tData)) {
+              fields[k] = { stringValue: String(v) };
+            }
+            docs.push({
+              name: `projects/${projectId}/databases/(default)/documents/users/${userUid}/fcmTokens/${tId}`,
+              fields,
+              createTime: tData.createdAt || new Date().toISOString()
+            });
+          }
+          return new Response(JSON.stringify({ documents: docs }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+        }
+      }
+    }
+
     // GET users collection (list)
     if (url.includes('/databases/(default)/documents/users?pageSize=')) {
       const docs = [];
@@ -2125,10 +2208,11 @@ export async function runAdminEndpointsTests() {
       console.log('✓ Test 30 Passed: Administrator target rejected safely (400)');
     }
 
-    // Test 31: Admin successfully changes ACTIVE client to INACTIVE (200)
+    // Test 31: Admin successfully changes ACTIVE client to INACTIVE (200 + FCM ACCOUNT_DEACTIVATED dispatch)
     {
       const originalProfile = { ...memoryUsers.get('client-user-1') };
       assert.strictEqual(originalProfile.status, 'active');
+      dispatchedFcmMessages.length = 0;
 
       const res = await app.fetch(
         new Request('https://worker.local/api/admin/clients/client-user-1/status', {
@@ -2159,13 +2243,30 @@ export async function runAdminEndpointsTests() {
       assert.strictEqual(updatedProfile.driveFolderId, originalProfile.driveFolderId);
       assert.strictEqual(updatedProfile.role, originalProfile.role);
       assert.strictEqual(updatedProfile.createdAt, originalProfile.createdAt);
-      console.log('✓ Test 31 Passed: Admin successfully changed ACTIVE client to INACTIVE (200)');
+
+      // Verify FCM ACCOUNT_DEACTIVATED dispatch to all registered devices (2 devices)
+      assert.strictEqual(dispatchedFcmMessages.length, 2, 'Must dispatch FCM to all registered client tokens');
+      const phoneMsg = dispatchedFcmMessages.find((m) => m.token === 'fcm-device-token-client-1-phone');
+      const tabletMsg = dispatchedFcmMessages.find((m) => m.token === 'fcm-device-token-client-1-tablet');
+      assert.ok(phoneMsg, 'Must dispatch FCM to client-1 phone token');
+      assert.ok(tabletMsg, 'Must dispatch FCM to client-1 tablet token');
+      assert.strictEqual(phoneMsg.data.type, 'ACCOUNT_DEACTIVATED', 'FCM type must be ACCOUNT_DEACTIVATED');
+      assert.strictEqual(phoneMsg.data.title, 'Account Deactivated');
+      assert.strictEqual(
+        phoneMsg.data.message,
+        'Your account is inactive. Please contact the administrator to activate it.',
+        'FCM message must match exact copy'
+      );
+      assert.strictEqual(typeof phoneMsg.data.notificationId, 'string');
+      assert.strictEqual(phoneMsg.data.notificationId.startsWith('deact_'), true);
+      console.log('✓ Test 31 Passed: Admin successfully changed ACTIVE client to INACTIVE (200 + FCM dispatched)');
     }
 
-    // Test 32: Admin successfully changes INACTIVE client to ACTIVE (200)
+    // Test 32: Admin successfully changes INACTIVE client to ACTIVE (200, no FCM)
     {
       const originalProfile = { ...memoryUsers.get('client-inactive-1') };
       assert.strictEqual(originalProfile.status, 'inactive');
+      dispatchedFcmMessages.length = 0;
 
       const res = await app.fetch(
         new Request('https://worker.local/api/admin/clients/client-inactive-1/status', {
@@ -2195,13 +2296,17 @@ export async function runAdminEndpointsTests() {
       assert.strictEqual(updatedProfile.panNumber, originalProfile.panNumber);
       assert.strictEqual(updatedProfile.driveFolderId, originalProfile.driveFolderId);
       assert.strictEqual(updatedProfile.role, originalProfile.role);
-      console.log('✓ Test 32 Passed: Admin successfully changed INACTIVE client to ACTIVE (200)');
+
+      // Verify FCM is NOT sent for activation
+      assert.strictEqual(dispatchedFcmMessages.length, 0, 'Must NOT dispatch FCM on INACTIVE -> ACTIVE transition');
+      console.log('✓ Test 32 Passed: Admin successfully changed INACTIVE client to ACTIVE (200, no FCM)');
     }
 
-    // Test 33: Same-status request skips Firestore write (no-op, 200)
+    // Test 33: Same-status request skips Firestore write and FCM (ACTIVE -> ACTIVE no-op, 200)
     {
       // client-inactive-1 is now ACTIVE
       const patchCountBefore = firestoreUserPatchCount;
+      dispatchedFcmMessages.length = 0;
       const res = await app.fetch(
         new Request('https://worker.local/api/admin/clients/client-inactive-1/status', {
           method: 'PATCH',
@@ -2220,7 +2325,35 @@ export async function runAdminEndpointsTests() {
       assert.strictEqual(body.status, 'ACTIVE');
 
       assert.strictEqual(firestoreUserPatchCount, patchCountBefore, 'Unnecessary Firestore write must be skipped');
-      console.log('✓ Test 33 Passed: Same-status request skipped Firestore write (200, no-op)');
+      assert.strictEqual(dispatchedFcmMessages.length, 0, 'Must NOT dispatch FCM on same-status ACTIVE request');
+      console.log('✓ Test 33 Passed: Same-status request skipped Firestore write & FCM (200, no-op)');
+    }
+
+    // Test 33b: Same-status request skips Firestore write and FCM (INACTIVE -> INACTIVE no-op, 200)
+    {
+      // client-user-1 is currently INACTIVE (from Test 31)
+      const patchCountBefore = firestoreUserPatchCount;
+      dispatchedFcmMessages.length = 0;
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 200, 'Same status request must return 200');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, true);
+      assert.strictEqual(body.clientId, 'client-user-1');
+      assert.strictEqual(body.status, 'INACTIVE');
+
+      assert.strictEqual(firestoreUserPatchCount, patchCountBefore, 'Unnecessary Firestore write must be skipped');
+      assert.strictEqual(dispatchedFcmMessages.length, 0, 'Must NOT dispatch FCM on same-status INACTIVE request');
+      console.log('✓ Test 33b Passed: INACTIVE -> INACTIVE request skipped Firestore write & FCM (200, no-op)');
     }
 
     // Test 34: Firestore failure handled safely (500/502)
@@ -2244,6 +2377,95 @@ export async function runAdminEndpointsTests() {
       // Reset failAtStep
       failAtStep = 'none';
       console.log('✓ Test 34 Passed: Firestore failure handled safely with 5xx');
+    }
+
+    // Test 35: Non-blocking FCM failure on ACTIVE -> INACTIVE does not fail request or revert status (200)
+    {
+      // Create an active client with FCM tokens
+      memoryUsers.set('client-fcm-failure-test', {
+        name: 'FCM Failure Test Client',
+        email: 'fcm-fail@example.com',
+        phone: '+919876543210',
+        panNumber: 'ABCDE1234F',
+        role: 'client',
+        status: 'active',
+        createdAt: new Date().toISOString()
+      });
+      const failTokens = new Map<string, any>();
+      failTokens.set('fail-token-1', {
+        token: 'fcm-fail-token-device',
+        platform: 'android',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      });
+      memoryFcmTokens.set('client-fcm-failure-test', failTokens);
+
+      simulateFcmSendFailure = true;
+      dispatchedFcmMessages.length = 0;
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-fcm-failure-test/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+
+      // Status update MUST still succeed
+      assert.strictEqual(res.status, 200, 'Status update must succeed despite FCM send error');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, true);
+      assert.strictEqual(body.clientId, 'client-fcm-failure-test');
+      assert.strictEqual(body.status, 'INACTIVE');
+
+      // Firestore status must remain INACTIVE
+      const savedUser = memoryUsers.get('client-fcm-failure-test');
+      assert.strictEqual(savedUser.status, 'inactive', 'Firestore status must remain inactive');
+
+      simulateFcmSendFailure = false;
+      console.log('✓ Test 35 Passed: FCM failure handled non-blockingly (200, status remains INACTIVE)');
+    }
+
+    // Test 36: Client with no FCM tokens deactivates safely (200)
+    {
+      // Create an active client with NO tokens in memoryFcmTokens
+      memoryUsers.set('client-no-fcm-tokens', {
+        name: 'No Tokens Client',
+        email: 'no-fcm@example.com',
+        phone: '+919876543211',
+        panNumber: 'BCDEF2345G',
+        role: 'client',
+        status: 'active',
+        createdAt: new Date().toISOString()
+      });
+      dispatchedFcmMessages.length = 0;
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-no-fcm-tokens/status', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ status: 'INACTIVE' })
+        }),
+        workerEnv
+      );
+
+      assert.strictEqual(res.status, 200, 'Status update for client without tokens must return 200');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, true);
+      assert.strictEqual(body.clientId, 'client-no-fcm-tokens');
+      assert.strictEqual(body.status, 'INACTIVE');
+
+      const savedUser = memoryUsers.get('client-no-fcm-tokens');
+      assert.strictEqual(savedUser.status, 'inactive');
+      assert.strictEqual(dispatchedFcmMessages.length, 0, 'No FCM messages dispatched when user has no tokens');
+      console.log('✓ Test 36 Passed: Client without FCM tokens deactivates cleanly (200)');
     }
 
     console.log('\n--- All STEP 26A, 26D & 26E Admin Client and Document API Tests Passed Successfully! ---\n');

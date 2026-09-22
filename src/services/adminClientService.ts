@@ -1,6 +1,7 @@
 import { firestoreRestService } from './firestoreRestService';
 import { googleDriveRestService, DriveRestOptions } from './googleDriveRestService';
 import { firebaseAuthRestService } from './firebaseAuthRestService';
+import { fcmService } from './fcmService';
 import { ValidatedClientInput } from '../utils/adminValidation';
 import {
   AdminClientItem,
@@ -726,6 +727,37 @@ export class AdminClientService {
     logger.info(
       `AdminClientService: Successfully changed client '${cleanClientId}' status from '${currentCanonicalStatus}' to '${targetStatus}'`
     );
+
+    // Step 5: If client transitioned from ACTIVE to INACTIVE, dispatch ACCOUNT_DEACTIVATED event to client devices
+    if (currentCanonicalStatus === 'ACTIVE' && targetStatus === 'INACTIVE') {
+      try {
+        const notificationId = `deact_${Date.now()}_${crypto.randomUUID().replace(/-/g, '').slice(0, 12)}`;
+        await fcmService.dispatchFcmToUserTokens(
+          cleanClientId,
+          {
+            type: 'ACCOUNT_DEACTIVATED',
+            notificationId,
+            category: 'ACCOUNT_DEACTIVATED',
+            title: 'Account Deactivated',
+            message: 'Your account is inactive. Please contact the administrator to activate it.'
+          },
+          {
+            projectId: ctx.projectId,
+            serviceAccountJson: ctx.serviceAccountJson,
+            customFetch: ctx.customFetch
+          }
+        );
+        logger.info(
+          `AdminClientService: Dispatched ACCOUNT_DEACTIVATED FCM event to registered tokens for client '${cleanClientId}'`
+        );
+      } catch (fcmErr) {
+        // FCM failure MUST NOT fail the admin status-change operation or roll back Firestore
+        logger.error(
+          `AdminClientService: Non-blocking FCM dispatch failure for deactivated client '${cleanClientId}':`,
+          fcmErr instanceof Error ? fcmErr.message : String(fcmErr)
+        );
+      }
+    }
 
     return {
       success: true,

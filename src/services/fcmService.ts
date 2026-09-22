@@ -276,7 +276,8 @@ export class FcmService {
           token: token,
           data: {
             notificationId: String(payload.notificationId || '').trim(),
-            category: String(payload.category || 'GENERAL').trim(),
+            category: String(payload.category || payload.type || 'GENERAL').trim(),
+            ...(payload.type ? { type: String(payload.type).trim() } : {}),
             title: String(payload.title || '').trim(),
             message: String(payload.message || '').trim()
           },

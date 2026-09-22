@@ -24,7 +24,8 @@ export interface DeleteFcmTokenInput {
 
 export interface FcmPushPayload {
   notificationId: string;
-  category: string;
+  category?: string;
+  type?: string;
   title: string;
   message: string;
   metadata?: Record<string, unknown>;
