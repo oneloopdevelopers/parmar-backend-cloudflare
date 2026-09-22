@@ -2005,6 +2005,40 @@ async function runWorkerEndpointsTests() {
       console.log('✓ Test 11B Passed: POST /api/documents/upload returns uploaderType "client" and uploaderName "Jatin Bhuchhda"');
     }
 
+    // ==========================================================
+    // TEST 12: CORS OPTIONS Preflight & Allowed Methods Verification
+    // ==========================================================
+    {
+      const preflightReq = new Request('http://localhost/api/documents', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://client.portal.example.com',
+          'Access-Control-Request-Method': 'PATCH',
+          'Access-Control-Request-Headers': 'Authorization, Content-Type, Accept, X-Requested-With'
+        }
+      });
+      const preflightRes = await app.request(preflightReq, {}, workerEnv);
+      assert.ok(preflightRes.status === 204 || preflightRes.status === 200);
+
+      const allowMethods = preflightRes.headers.get('Access-Control-Allow-Methods') || '';
+      const allowHeaders = preflightRes.headers.get('Access-Control-Allow-Headers') || '';
+
+      assert.ok(allowMethods.includes('PATCH'), 'CORS must allow PATCH');
+      assert.ok(allowMethods.includes('GET'), 'CORS must allow GET');
+      assert.ok(allowMethods.includes('POST'), 'CORS must allow POST');
+      assert.ok(allowMethods.includes('PUT'), 'CORS must allow PUT');
+      assert.ok(allowMethods.includes('DELETE'), 'CORS must allow DELETE');
+      assert.ok(allowMethods.includes('OPTIONS'), 'CORS must allow OPTIONS');
+
+      const normalizedHeaders = allowHeaders.toLowerCase();
+      assert.ok(normalizedHeaders.includes('authorization'), 'CORS must allow Authorization header');
+      assert.ok(normalizedHeaders.includes('content-type'), 'CORS must allow Content-Type header');
+      assert.ok(normalizedHeaders.includes('accept'), 'CORS must allow Accept header');
+      assert.ok(normalizedHeaders.includes('x-requested-with'), 'CORS must allow X-Requested-With header');
+
+      console.log('✓ Test 12 Passed: Global CORS OPTIONS preflight verifies PATCH and all allowed headers');
+    }
+
     console.log('--- All Cloudflare Worker App Endpoints Tests Passed! ---\n');
   } finally {
     globalThis.fetch = originalFetch;

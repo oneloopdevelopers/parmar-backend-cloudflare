@@ -213,7 +213,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // Enable CORS
   app.use('*', cors({
     origin: '*',
-    allowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-Requested-With']
   }));
 

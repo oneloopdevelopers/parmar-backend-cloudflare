@@ -2468,6 +2468,46 @@ export async function runAdminEndpointsTests() {
       console.log('✓ Test 36 Passed: Client without FCM tokens deactivates cleanly (200)');
     }
 
+    // Test 37: CORS Preflight (OPTIONS) includes PATCH in Access-Control-Allow-Methods
+    {
+      const preflightReq = new Request('https://worker.local/api/admin/clients/client-user-1/status', {
+        method: 'OPTIONS',
+        headers: {
+          Origin: 'https://admin.portal.example.com',
+          'Access-Control-Request-Method': 'PATCH',
+          'Access-Control-Request-Headers': 'Authorization, Content-Type, Accept, X-Requested-With'
+        }
+      });
+      const preflightRes = await app.fetch(preflightReq, workerEnv);
+
+      // Status for preflight is typically 204 or 200
+      assert.ok(preflightRes.status === 204 || preflightRes.status === 200, `Preflight status should be 204 or 200, got ${preflightRes.status}`);
+
+      const allowMethodsHeader = preflightRes.headers.get('Access-Control-Allow-Methods') || '';
+      const allowHeadersHeader = preflightRes.headers.get('Access-Control-Allow-Headers') || '';
+      const allowOriginHeader = preflightRes.headers.get('Access-Control-Allow-Origin') || '';
+
+      // Verify Access-Control-Allow-Methods includes PATCH, GET, POST, PUT, DELETE, OPTIONS
+      assert.ok(allowMethodsHeader.includes('PATCH'), `Access-Control-Allow-Methods must include PATCH. Got: ${allowMethodsHeader}`);
+      assert.ok(allowMethodsHeader.includes('GET'), `Access-Control-Allow-Methods must include GET. Got: ${allowMethodsHeader}`);
+      assert.ok(allowMethodsHeader.includes('POST'), `Access-Control-Allow-Methods must include POST. Got: ${allowMethodsHeader}`);
+      assert.ok(allowMethodsHeader.includes('PUT'), `Access-Control-Allow-Methods must include PUT. Got: ${allowMethodsHeader}`);
+      assert.ok(allowMethodsHeader.includes('DELETE'), `Access-Control-Allow-Methods must include DELETE. Got: ${allowMethodsHeader}`);
+      assert.ok(allowMethodsHeader.includes('OPTIONS'), `Access-Control-Allow-Methods must include OPTIONS. Got: ${allowMethodsHeader}`);
+
+      // Verify Access-Control-Allow-Headers includes Authorization, Content-Type, Accept, X-Requested-With
+      const normalizedAllowHeaders = allowHeadersHeader.toLowerCase();
+      assert.ok(normalizedAllowHeaders.includes('authorization'), `Access-Control-Allow-Headers must include Authorization. Got: ${allowHeadersHeader}`);
+      assert.ok(normalizedAllowHeaders.includes('content-type'), `Access-Control-Allow-Headers must include Content-Type. Got: ${allowHeadersHeader}`);
+      assert.ok(normalizedAllowHeaders.includes('accept'), `Access-Control-Allow-Headers must include Accept. Got: ${allowHeadersHeader}`);
+      assert.ok(normalizedAllowHeaders.includes('x-requested-with'), `Access-Control-Allow-Headers must include X-Requested-With. Got: ${allowHeadersHeader}`);
+
+      // Verify origin handling
+      assert.ok(allowOriginHeader === '*' || allowOriginHeader === 'https://admin.portal.example.com', `Access-Control-Allow-Origin must be valid. Got: ${allowOriginHeader}`);
+
+      console.log('✓ Test 37 Passed: CORS OPTIONS preflight verifies PATCH in Access-Control-Allow-Methods and all required headers');
+    }
+
     console.log('\n--- All STEP 26A, 26D & 26E Admin Client and Document API Tests Passed Successfully! ---\n');
   } finally {
     globalThis.fetch = originalFetch;
