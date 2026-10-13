@@ -17,7 +17,7 @@ export interface BootstrapAdminResult {
   message: string;
 }
 
-export const BOOTSTRAP_ADMIN_EMAIL = 'support@oneloop.co.in';
+export const BOOTSTRAP_ADMIN_EMAIL = 'docs.parmar@gmail.com';
 export const BOOTSTRAP_ADMIN_NAME = 'Administrator';
 
 /**
