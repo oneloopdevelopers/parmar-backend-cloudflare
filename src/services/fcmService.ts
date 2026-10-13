@@ -264,7 +264,7 @@ export class FcmService {
         customFetch: ctx.customFetch
       });
 
-      const targetProjectId = ctx.projectId || saProjectId || 'document-portal-d2b6d';
+      const targetProjectId = ctx.projectId || saProjectId || 'parmar-consultancy';
       const fcmUrl = `https://fcm.googleapis.com/v1/projects/${targetProjectId}/messages:send`;
 
       // Safe HTTP v1 DATA-ONLY message structure compliant with Android FcmPayloadParser.

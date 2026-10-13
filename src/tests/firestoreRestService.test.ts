@@ -69,9 +69,9 @@ async function runFirestoreRestServiceTests() {
   const { privateKey } = await generateKeyPair('RS256', { extractable: true });
   const privateKeyPem = await exportPKCS8(privateKey);
   const testServiceAccountJson = JSON.stringify({
-    project_id: 'document-portal-d2b6d',
+    project_id: 'parmar-consultancy',
     private_key: privateKeyPem,
-    client_email: 'test@document-portal-d2b6d.iam.gserviceaccount.com'
+    client_email: 'test@parmar-consultancy.iam.gserviceaccount.com'
   });
 
   // Test 3: getClientProfile with simulated fetch
@@ -91,7 +91,7 @@ async function runFirestoreRestServiceTests() {
       if (url.includes('/users/test-uid-active')) {
         return new Response(
           JSON.stringify({
-            name: 'projects/document-portal-d2b6d/databases/(default)/documents/users/test-uid-active',
+            name: 'projects/parmar-consultancy/databases/(default)/documents/users/test-uid-active',
             fields: {
               name: { stringValue: 'Active Client' },
               email: { stringValue: 'active@example.com' },
@@ -117,7 +117,7 @@ async function runFirestoreRestServiceTests() {
     }) as any;
 
     const profile = await service.getClientProfile('test-uid-active', {
-      projectId: 'document-portal-d2b6d',
+      projectId: 'parmar-consultancy',
       serviceAccountJson: testServiceAccountJson,
       customFetch: mockFetch
     });
@@ -132,7 +132,7 @@ async function runFirestoreRestServiceTests() {
     await assert.rejects(
       async () => {
         await service.getClientProfile('test-uid-not-found', {
-          projectId: 'document-portal-d2b6d',
+          projectId: 'parmar-consultancy',
           serviceAccountJson: testServiceAccountJson,
           customFetch: mockFetch
         });

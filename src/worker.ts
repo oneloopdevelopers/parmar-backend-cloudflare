@@ -260,7 +260,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new UnauthorizedError('Authentication required. Bearer token is empty.');
     }
 
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     let verified;
     try {
       verified = await tokenVerifier(token, { projectId });
@@ -292,7 +292,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new UnauthorizedError('Administrator authentication required. Bearer token is empty.');
     }
 
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     let verified;
     try {
       verified = await tokenVerifier(token, { projectId });
@@ -342,7 +342,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ROUTE 1: GET /api/health (Public)
   // ==========================================
   app.get('/api/health', (c) => {
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const envName = (c.env?.NODE_ENV as string) || 'production';
 
     const healthData = {
@@ -395,7 +395,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ROUTE 2: GET /api/health/firebase
   // ==========================================
   app.get('/api/health/firebase', async (c) => {
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     let firestoreStatus: {
@@ -850,7 +850,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       const projectId =
         (c.env?.FIREBASE_PROJECT_ID as string) ||
         (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
-        'document-portal-d2b6d';
+        'parmar-consultancy';
       const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
       if (!clientId || !clientSecret || !encryptionKey || !serviceAccountJson) {
@@ -910,7 +910,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================
   app.get('/api/profile', requireAuth, async (c) => {
     const uid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -950,7 +950,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================
   app.post('/api/profile/fcm-token', requireAuth, async (c) => {
     const callerUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -998,7 +998,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================
   app.delete('/api/profile/fcm-token', requireAuth, async (c) => {
     const callerUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1044,7 +1044,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================
   app.get('/api/drive/test', requireAuth, async (c) => {
     const uid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1099,7 +1099,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================
   app.get('/api/documents', requireAuth, async (c) => {
     const uid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1243,7 +1243,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
     // Identity MUST come exclusively from verified Firebase token
     const uid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1364,7 +1364,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================================
   app.post('/api/documents/upload', requireAuth, async (c) => {
     const uid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1559,7 +1559,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================
   app.get('/api/admin/clients', requireAdminAuth, async (c) => {
     const adminUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1591,7 +1591,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ==========================================
   app.post('/api/admin/clients', requireAdminAuth, async (c) => {
     const adminUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1640,7 +1640,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     const clientId = rawClientId.trim();
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1690,7 +1690,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
     }
 
     const clientId = rawClientId.trim();
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1737,7 +1737,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
     }
 
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1806,7 +1806,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
     }
 
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1904,7 +1904,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
     }
 
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -1973,7 +1973,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       throw new BadRequestError('Content-Type must be multipart/form-data for document upload.');
     }
 
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -2077,7 +2077,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ROUTE 12: GET /api/notifications (Client Protected)
   app.get('/api/notifications', requireAuth, async (c) => {
     const callerUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -2109,7 +2109,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ROUTE 13: GET /api/notifications/unread-count (Client Protected)
   app.get('/api/notifications/unread-count', requireAuth, async (c) => {
     const callerUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -2135,7 +2135,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   app.patch('/api/notifications/:notificationId/read', requireAuth, async (c) => {
     const callerUid = c.get('verifiedUid');
     const notificationId = c.req.param('notificationId');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -2164,7 +2164,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ROUTE 15: POST /api/notifications/mark-all-read (Client Protected)
   app.post('/api/notifications/mark-all-read', requireAuth, async (c) => {
     const callerUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -2193,7 +2193,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   app.delete('/api/notifications/:notificationId', requireAuth, async (c) => {
     const callerUid = c.get('verifiedUid');
     const notificationId = c.req.param('notificationId');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -2224,7 +2224,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
   // ROUTE 17: POST /api/admin/notifications (Admin Protected)
   app.post('/api/admin/notifications', requireAdminAuth, async (c) => {
     const adminUid = c.get('verifiedUid');
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {
@@ -2281,7 +2281,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
 
   // ROUTE 18: GET /api/admin/notifications/history (Admin Protected)
   app.get('/api/admin/notifications/history', requireAdminAuth, async (c) => {
-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
 
     if (!serviceAccountJson) {

@@ -97,7 +97,7 @@ async function runTests() {
 
     const middleware = createAuthenticateFirebaseUser({
       getAuth: () => mockAuth,
-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
+      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
     });
 
     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer expired-jwt-token' });
@@ -122,7 +122,7 @@ async function runTests() {
 
     const middleware = createAuthenticateFirebaseUser({
       getAuth: () => mockAuth,
-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
+      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
     });
 
     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer invalid-token' });
@@ -147,7 +147,7 @@ async function runTests() {
 
     const middleware = createAuthenticateFirebaseUser({
       getAuth: () => mockAuth,
-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
+      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
     });
 
     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
@@ -168,7 +168,7 @@ async function runTests() {
 
     const middleware = createAuthenticateFirebaseUser({
       getAuth: () => mockAuth,
-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
+      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
     });
 
     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
@@ -198,7 +198,7 @@ async function runTests() {
     const middleware = createAuthenticateFirebaseUser({
       getAuth: () => mockAuth,
       getDb: () => mockDb,
-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
+      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
     });
 
     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
@@ -235,7 +235,7 @@ async function runTests() {
     const middleware = createAuthenticateFirebaseUser({
       getAuth: () => mockAuth,
       getDb: () => mockDb,
-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
+      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
     });
 
     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
@@ -254,7 +254,7 @@ async function runTests() {
         uid: 'valid_client_uid_123',
         email: 'client@example.com',
         email_verified: true,
-        aud: 'document-portal-d2b6d'
+        aud: 'parmar-consultancy'
       }),
       getUser: async () => ({ uid: 'valid_client_uid_123', disabled: false })
     };
@@ -287,7 +287,7 @@ async function runTests() {
     const middleware = createAuthenticateFirebaseUser({
       getAuth: () => mockAuth,
       getDb: () => mockDb,
-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
+      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
     });
 
     const { req, res, next, getNextError, wasNextCalled } = createMockContext({ authorization: 'Bearer valid-live-token' });

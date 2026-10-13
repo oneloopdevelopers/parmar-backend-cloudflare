@@ -15,11 +15,11 @@ export async function runAdminBootstrapTests() {
   const { privateKey: saPrivateKey } = await generateKeyPair('RS256', { extractable: true });
   const saPrivateKeyPem = await exportPKCS8(saPrivateKey);
 
-  const projectId = 'document-portal-d2b6d';
+  const projectId = 'parmar-consultancy';
   const testServiceAccountJson = JSON.stringify({
     project_id: projectId,
     private_key: saPrivateKeyPem,
-    client_email: 'test-backend@document-portal-d2b6d.iam.gserviceaccount.com'
+    client_email: 'test-backend@parmar-consultancy.iam.gserviceaccount.com'
   });
 
   // Test state stores

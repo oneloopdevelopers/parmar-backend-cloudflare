@@ -749,7 +749,7 @@ export async function getGoogleDriveOAuthAccessToken(
   const projectId =
     (env?.FIREBASE_PROJECT_ID as string) ||
     (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
-    'document-portal-d2b6d';
+    'parmar-consultancy';
 
   const serviceAccountJson =
     env?.FIREBASE_SERVICE_ACCOUNT_JSON ||
@@ -859,7 +859,7 @@ export async function diagnoseGoogleDriveOAuthRefresh(
   const projectId =
     (env?.FIREBASE_PROJECT_ID as string) ||
     (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
-    'document-portal-d2b6d';
+    'parmar-consultancy';
 
   const serviceAccountJson =
     env?.FIREBASE_SERVICE_ACCOUNT_JSON ||

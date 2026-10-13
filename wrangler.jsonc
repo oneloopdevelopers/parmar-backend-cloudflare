@@ -7,7 +7,7 @@
     "nodejs_compat"
   ],
   "vars": {
-    "FIREBASE_PROJECT_ID": "document-portal-d2b6d",
+    "FIREBASE_PROJECT_ID": "parmar-consultancy",
     "NODE_ENV": "production"
   },
   "kv_namespaces": [

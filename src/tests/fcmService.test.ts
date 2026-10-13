@@ -14,7 +14,7 @@ export async function runFcmServiceTests() {
   const { privateKey: saPrivateKey } = await generateKeyPair('RS256', { extractable: true });
   const saPrivateKeyPem = await exportPKCS8(saPrivateKey);
 
-  const projectId = 'document-portal-d2b6d';
+  const projectId = 'parmar-consultancy';
   const serviceAccountJson = JSON.stringify({
     project_id: projectId,
     client_email: 'fcm-test@example.com',
@@ -332,7 +332,7 @@ export async function runFcmServiceTests() {
       const targetToken = body.message?.token;
 
       if (targetToken === validToken) {
-        return new Response(JSON.stringify({ name: 'projects/document-portal-d2b6d/messages/msg_12345' }), {
+        return new Response(JSON.stringify({ name: 'projects/parmar-consultancy/messages/msg_12345' }), {
           status: 200,
           headers: { 'Content-Type': 'application/json' }
         });

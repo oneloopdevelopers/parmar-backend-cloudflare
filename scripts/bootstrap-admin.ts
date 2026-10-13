@@ -51,7 +51,7 @@ async function main() {
   console.log(`Target Admin Email: ${BOOTSTRAP_ADMIN_EMAIL}`);
   console.log('');
 
-  const projectId = process.env.FIREBASE_PROJECT_ID || 'document-portal-d2b6d';
+  const projectId = process.env.FIREBASE_PROJECT_ID || 'parmar-consultancy';
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
 
   if (!serviceAccountJson) {

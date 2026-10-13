@@ -83,7 +83,6 @@ export function createAuthenticateFirebaseUser(deps?: AuthenticateFirebaseUserDe
 
     try {
       const auth = getAuth();
-      const db = getDb();
 
       // 3. Verify the token using Firebase Admin SDK
       let decodedToken: any;
@@ -155,6 +154,7 @@ export function createAuthenticateFirebaseUser(deps?: AuthenticateFirebaseUserDe
       // 5. Retrieve the user profile from Firestore using: users/{firebaseUid}
       let userDoc: any;
       try {
+        const db = getDb();
         const docRef = db.collection('users').doc(firebaseUid);
         userDoc = await docRef.get();
       } catch (firestoreErr: unknown) {

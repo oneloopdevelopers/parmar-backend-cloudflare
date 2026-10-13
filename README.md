@@ -2,13 +2,13 @@
 
 This project is a dedicated **server-side REST API backend** configured to connect directly with your existing Firebase project:
 
-**Target Firebase Project ID:** `document-portal-d2b6d`
+**Target Firebase Project ID:** `parmar-consultancy`
 
 ---
 
 ## Architecture & Security Principles
 
-1. **Shared Existing Firebase Project (`document-portal-d2b6d`)**:
+1. **Shared Existing Firebase Project (`parmar-consultancy`)**:
    - Uses the exact same Firebase Project as the Android client app.
    - Does **not** create a new Firebase project, auth realm, or separate database.
    - Reads directly from the shared Firestore database collection (`users/{firebaseUid}`).
@@ -33,7 +33,7 @@ This project is a dedicated **server-side REST API backend** configured to conne
 | Method | Endpoint | Auth Required | Description |
 |---|---|---|---|
 | `GET` | `/api/health` | No | Public health check, server status & Firebase Admin status |
-| `GET` | `/api/health/firebase` | Optional | Verifies Firebase Admin SDK initialization & live Firestore communication on project `document-portal-d2b6d` |
+| `GET` | `/api/health/firebase` | Optional | Verifies Firebase Admin SDK initialization & live Firestore communication on project `parmar-consultancy` |
 | `GET` | `/api/profile` | **Yes** (Bearer Token) | Returns user profile (`name`, `email`, `phone`, `maskedPanNumber`, `role`, `status`) from Firestore `users/{firebaseUid}` |
 
 > **Note on Future Capabilities**: As requested, Google Drive integration and document upload/download endpoints (`/api/documents`) are deferred for the subsequent phase.
@@ -46,7 +46,7 @@ The module safely manages initialization and exports:
 - `auth`: Firebase Authentication instance & token verification (`getAuthInstance()`)
 - `db`: Cloud Firestore instance (`getFirestoreInstance()`)
 - `validateFirebaseAdminStartup()`: Startup validation reporting initialization status to console logs.
-- `testFirestoreConnectivity()`: Validates live communication with Cloud Firestore on project `document-portal-d2b6d`.
+- `testFirestoreConnectivity()`: Validates live communication with Cloud Firestore on project `parmar-consultancy`.
 
 ---
 
@@ -135,7 +135,7 @@ When deploying or running in production, configure the Firebase Admin SDK using 
 
 When running in Google Cloud environments (Cloud Run):
 1. Assign the **Firebase Authentication Viewer** and **Cloud Datastore User** (Firestore) IAM roles to the runtime service account.
-2. The Firebase Admin SDK automatically authenticates via ADC targeting `document-portal-d2b6d` without requiring private key files!
+2. The Firebase Admin SDK automatically authenticates via ADC targeting `parmar-consultancy` without requiring private key files!
 
 ### Method 2: Environment Variables (Cloud Run Secrets / Container Config)
 
@@ -143,10 +143,10 @@ Set the following environment variables:
 
 ```bash
 # Firebase Project ID
-FIREBASE_PROJECT_ID="document-portal-d2b6d"
+FIREBASE_PROJECT_ID="parmar-consultancy"
 
 # Service Account Client Email
-FIREBASE_CLIENT_EMAIL="firebase-adminsdk-xxxxx@document-portal-d2b6d.iam.gserviceaccount.com"
+FIREBASE_CLIENT_EMAIL="firebase-adminsdk-xxxxx@parmar-consultancy.iam.gserviceaccount.com"
 
 # Service Account Private Key (include \n line breaks)
 FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\n-----END PRIVATE KEY-----\n"
@@ -155,7 +155,7 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFA
 Alternatively, provide the entire JSON content in a single variable:
 
 ```bash
-FIREBASE_SERVICE_ACCOUNT_JSON='{"type":"service_account","project_id":"document-portal-d2b6d",...}'
+FIREBASE_SERVICE_ACCOUNT_JSON='{"type":"service_account","project_id":"parmar-consultancy",...}'
 ```
 
 ### Method 3: Service Account Key File (Local Development)

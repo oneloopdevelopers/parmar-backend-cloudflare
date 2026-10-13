@@ -4,6 +4,9 @@ import { testDriveAccess } from '../controllers/drive.controller';
 import { enforceZeroTrustIdentity } from '../middleware/validation.middleware';
 import { AuthenticatedRequest } from '../types';
 
+import { config } from '../config/environment';
+import { generateKeyPair, exportPKCS8 } from 'jose';
+
 let testsPassed = 0;
 function pass(desc: string) {
   testsPassed++;
@@ -14,7 +17,16 @@ async function runTests() {
   console.log('\n--- Starting Tests for Google Drive Service & /api/drive/test ---');
 
   // Test 1: Instantiation of Drive client
+  const originalSa = config.firebase.serviceAccountJson;
   try {
+    const { privateKey } = await generateKeyPair('RS256', { extractable: true });
+    const privateKeyPem = await exportPKCS8(privateKey);
+    config.firebase.serviceAccountJson = JSON.stringify({
+      project_id: 'parmar-consultancy',
+      private_key: privateKeyPem,
+      client_email: 'test@parmar-consultancy.iam.gserviceaccount.com'
+    });
+
     const driveClient = googleDriveService.createDriveClient();
     assert(driveClient !== null && driveClient !== undefined, 'Drive client must not be null');
     assert(typeof driveClient.files.get === 'function', 'Drive client must have files.get');
@@ -22,6 +34,8 @@ async function runTests() {
     pass('1. googleDriveService.createDriveClient() successfully instantiates Drive v3 client');
   } catch (err: any) {
     assert.fail(`Test 1 failed: ${err.message}`);
+  } finally {
+    config.firebase.serviceAccountJson = originalSa;
   }
 
   // Test 2: Zero-trust middleware rejects driveFolderId in query

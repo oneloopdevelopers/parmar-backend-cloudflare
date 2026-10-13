@@ -7,7 +7,7 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   isProduction: process.env.NODE_ENV === 'production',
   firebase: {
-    projectId: process.env.FIREBASE_PROJECT_ID || 'document-portal-d2b6d',
+    projectId: process.env.FIREBASE_PROJECT_ID || 'parmar-consultancy',
     clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
     privateKey: process.env.FIREBASE_PRIVATE_KEY 
       ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') 

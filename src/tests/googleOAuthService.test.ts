@@ -257,7 +257,7 @@ async function runGoogleOAuthServiceTests() {
 
   // 8a: When OAuth secrets are missing, returns null
   const emptyEnv: Env = {
-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d'
+    FIREBASE_PROJECT_ID: 'parmar-consultancy'
   };
   const noOAuthToken = await getGoogleDriveOAuthAccessToken(emptyEnv);
   assert.strictEqual(noOAuthToken, null, 'Should return null when OAuth env variables are missing');
@@ -271,11 +271,11 @@ async function runGoogleOAuthServiceTests() {
   };
 
   const mockEnv: Env = {
-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d',
+    FIREBASE_PROJECT_ID: 'parmar-consultancy',
     FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
-      project_id: 'document-portal-d2b6d',
+      project_id: 'parmar-consultancy',
       private_key: 'mock-key',
-      client_email: 'mock-sa@document-portal-d2b6d.iam.gserviceaccount.com'
+      client_email: 'mock-sa@parmar-consultancy.iam.gserviceaccount.com'
     }),
     GOOGLE_OAUTH_CLIENT_ID: 'test-client-id',
     GOOGLE_OAUTH_CLIENT_SECRET: 'test-client-secret',
@@ -313,11 +313,11 @@ async function runGoogleOAuthServiceTests() {
 
   const testSetupKey = 'my-super-secret-admin-setup-key-2026';
   const workerEnv: Env = {
-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d',
+    FIREBASE_PROJECT_ID: 'parmar-consultancy',
     FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
-      project_id: 'document-portal-d2b6d',
+      project_id: 'parmar-consultancy',
       private_key: 'mock-key',
-      client_email: 'mock-sa@document-portal-d2b6d.iam.gserviceaccount.com'
+      client_email: 'mock-sa@parmar-consultancy.iam.gserviceaccount.com'
     }),
     GOOGLE_OAUTH_SETUP_KEY: testSetupKey,
     GOOGLE_OAUTH_CLIENT_ID: 'test-oauth-client-id.apps.googleusercontent.com',
@@ -589,11 +589,11 @@ async function runGoogleOAuthServiceTests() {
 
   const diagSetupKey = 'super-secret-setup-key-12345';
   const diagEnv: Env = {
-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d',
+    FIREBASE_PROJECT_ID: 'parmar-consultancy',
     FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
-      project_id: 'document-portal-d2b6d',
+      project_id: 'parmar-consultancy',
       private_key: 'mock-key',
-      client_email: 'mock-sa@document-portal-d2b6d.iam.gserviceaccount.com'
+      client_email: 'mock-sa@parmar-consultancy.iam.gserviceaccount.com'
     }),
     GOOGLE_OAUTH_CLIENT_ID: 'test-client-id-123',
     GOOGLE_OAUTH_CLIENT_SECRET: 'test-client-secret-xyz',
