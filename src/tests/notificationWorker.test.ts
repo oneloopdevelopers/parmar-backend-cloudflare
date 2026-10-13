@@ -6,7 +6,7 @@ import { generateKeyPair, exportPKCS8, exportJWK, SignJWT } from 'jose';
 export async function runNotificationWorkerTests() {
   console.log('\n--- Starting Notification Centre Cloudflare Worker HTTP Endpoint Tests ---');
 
-  const projectId = 'document-portal-d2b6d';
+  const projectId = 'parmar-consultancy';
 
   // Generate test RSA keys for Firebase Auth & Service Account
   const { privateKey: fbPrivateKey, publicKey: fbPublicKey } = await generateKeyPair('RS256', { extractable: true });

@@ -66,15 +66,15 @@ async function runFirebaseAdminConfigTests() {
   });
 
   // 5. Strictly rejects project ID mismatch
-  await test('5. Strictly rejects project_id that does not match document-portal-d2b6d', () => {
+  await test('5. Strictly rejects project_id that does not match parmar-consultancy', () => {
     const wrongProjectJson = JSON.stringify({
       project_id: 'some-other-unauthorized-project',
       client_email: 'test@some-other.iam.gserviceaccount.com',
       private_key: '-----BEGIN PRIVATE KEY-----\nfake-key\n-----END PRIVATE KEY-----\n'
     });
     assert.throws(
-      () => validateAndParseServiceAccountJson(wrongProjectJson, 'document-portal-d2b6d'),
-      /Project ID mismatch: Service account project_id 'some-other-unauthorized-project' does not match authorized target project 'document-portal-d2b6d'/
+      () => validateAndParseServiceAccountJson(wrongProjectJson, 'parmar-consultancy'),
+      /Project ID mismatch: Service account project_id 'some-other-unauthorized-project' does not match authorized target project 'parmar-consultancy'/
     );
   });
 
@@ -94,7 +94,7 @@ async function runFirebaseAdminConfigTests() {
   await test('7. Rejects JSON with missing private_key', () => {
     const json = JSON.stringify({
       project_id: TARGET_FIREBASE_PROJECT_ID,
-      client_email: 'admin@document-portal-d2b6d.iam.gserviceaccount.com'
+      client_email: 'admin@parmar-consultancy.iam.gserviceaccount.com'
     });
     assert.throws(
       () => validateAndParseServiceAccountJson(json),
@@ -102,20 +102,20 @@ async function runFirebaseAdminConfigTests() {
     );
   });
 
-  // 8. Successfully parses and normalizes valid document-portal-d2b6d service account
-  await test('8. Successfully validates and parses authentic document-portal-d2b6d service account', () => {
+  // 8. Successfully parses and normalizes valid parmar-consultancy service account
+  await test('8. Successfully validates and parses authentic parmar-consultancy service account', () => {
     const validJson = JSON.stringify({
       type: 'service_account',
-      project_id: 'document-portal-d2b6d',
+      project_id: 'parmar-consultancy',
       private_key_id: 'key123',
       private_key: '-----BEGIN PRIVATE KEY-----\\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC3\\n-----END PRIVATE KEY-----\\n',
-      client_email: 'firebase-adminsdk-test@document-portal-d2b6d.iam.gserviceaccount.com',
+      client_email: 'firebase-adminsdk-test@parmar-consultancy.iam.gserviceaccount.com',
       client_id: '123456789'
     });
 
-    const parsed = validateAndParseServiceAccountJson(validJson, 'document-portal-d2b6d');
-    assert.strictEqual(parsed.project_id, 'document-portal-d2b6d');
-    assert.strictEqual(parsed.client_email, 'firebase-adminsdk-test@document-portal-d2b6d.iam.gserviceaccount.com');
+    const parsed = validateAndParseServiceAccountJson(validJson, 'parmar-consultancy');
+    assert.strictEqual(parsed.project_id, 'parmar-consultancy');
+    assert.strictEqual(parsed.client_email, 'firebase-adminsdk-test@parmar-consultancy.iam.gserviceaccount.com');
     // Ensure escaped newlines are normalized
     assert.ok(parsed.private_key.includes('\n'));
     assert.ok(!parsed.private_key.includes('\\n'));

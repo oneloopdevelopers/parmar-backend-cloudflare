@@ -4,7 +4,7 @@ import { getFirestore, Firestore } from 'firebase-admin/firestore';
 import { config } from './environment';
 import { logger } from '../utils/logger';
 
-export const TARGET_FIREBASE_PROJECT_ID = config.firebase.projectId || 'document-portal-d2b6d';
+export const TARGET_FIREBASE_PROJECT_ID = config.firebase.projectId || 'parmar-consultancy';
 
 export interface FirebaseAdminStatus {
   isInitialized: boolean;
@@ -39,7 +39,7 @@ let adminStatus: FirebaseAdminStatus = {
  * Strict Security Rules:
  * 1. Parsed only on the server runtime; never sent to clients or browser.
  * 2. Never prints or logs credential contents, tokens, or private keys.
- * 3. Enforces that the service account's project_id matches TARGET_FIREBASE_PROJECT_ID ('document-portal-d2b6d').
+ * 3. Enforces that the service account's project_id matches TARGET_FIREBASE_PROJECT_ID ('parmar-consultancy').
  * 4. Rejects malformed JSON, missing fields, or cross-project keys.
  */
 export function validateAndParseServiceAccountJson(
@@ -71,7 +71,7 @@ export function validateAndParseServiceAccountJson(
     throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is missing the required 'project_id' field.");
   }
 
-  // Strict project matching: Must match target project 'document-portal-d2b6d'
+  // Strict project matching: Must match target project 'parmar-consultancy'
   if (projectId !== expectedProjectId) {
     throw new Error(
       `Project ID mismatch: Service account project_id '${projectId}' does not match authorized target project '${expectedProjectId}'. Only project '${expectedProjectId}' is allowed.`
@@ -97,7 +97,7 @@ export function validateAndParseServiceAccountJson(
 }
 
 /**
- * Initializes Firebase Admin SDK safely for existing Firebase project 'document-portal-d2b6d'.
+ * Initializes Firebase Admin SDK safely for existing Firebase project 'parmar-consultancy'.
  * 
  * Order of Precedence:
  * 1. FIREBASE_SERVICE_ACCOUNT_JSON server-side secret (primary for AI Studio development/testing).

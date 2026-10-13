@@ -12,11 +12,11 @@ export async function runAdminEndpointsTests() {
   const { privateKey: saPrivateKey } = await generateKeyPair('RS256', { extractable: true });
   const saPrivateKeyPem = await exportPKCS8(saPrivateKey);
 
-  const projectId = 'document-portal-d2b6d';
+  const projectId = 'parmar-consultancy';
   const testServiceAccountJson = JSON.stringify({
     project_id: projectId,
     private_key: saPrivateKeyPem,
-    client_email: 'test-backend@document-portal-d2b6d.iam.gserviceaccount.com'
+    client_email: 'test-backend@parmar-consultancy.iam.gserviceaccount.com'
   });
 
   const workerEnv = {
@@ -228,7 +228,7 @@ export async function runAdminEndpointsTests() {
         fullBody: body
       });
       return new Response(
-        JSON.stringify({ name: 'projects/document-portal-d2b6d/messages/msg_fcm_mock' }),
+        JSON.stringify({ name: 'projects/parmar-consultancy/messages/msg_fcm_mock' }),
         { status: 200, headers: { 'Content-Type': 'application/json' } }
       );
     }

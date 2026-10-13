@@ -9,7 +9,7 @@ import { BadRequestError } from '../utils/errors';
 const router = Router();
 
 const getServiceContext = () => ({
-  projectId: config.firebase.projectId || 'document-portal-d2b6d',
+  projectId: config.firebase.projectId || 'parmar-consultancy',
   serviceAccountJson: config.firebase.serviceAccountJson || ''
 });
 

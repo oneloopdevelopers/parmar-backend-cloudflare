@@ -7,7 +7,7 @@ async function runFirebaseTokenVerifierTests() {
 
   // Generate an RSA key pair for local JWT verification tests
   const { privateKey, publicKey } = await generateKeyPair('RS256');
-  const projectId = 'document-portal-d2b6d';
+  const projectId = 'parmar-consultancy';
   const expectedIssuer = `https://securetoken.google.com/${projectId}`;
 
   // Custom key resolver that returns our test public key

@@ -47,7 +47,7 @@ export async function verifyFirebaseIdToken(
   }
 
   const cleanToken = token.trim();
-  const projectId = options?.projectId || 'document-portal-d2b6d';
+  const projectId = options?.projectId || 'parmar-consultancy';
   const expectedIssuer = `https://securetoken.google.com/${projectId}`;
   const keyResolver = options?.keyResolver || getRemoteJwks();
 
