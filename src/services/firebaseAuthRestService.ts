@@ -1,5 +1,5 @@
 import { getGoogleAccessToken } from './googleServiceAccountAuth';
-import { BadRequestError, BadGatewayError, NotFoundError, ConflictError } from '../utils/errors';
+import { BadRequestError, BadGatewayError, NotFoundError, ConflictError, ForbiddenError } from '../utils/errors';
 import { logger } from '../utils/logger';
 
 export interface FirebaseAdminAuthUser {
@@ -118,6 +118,103 @@ export class FirebaseAuthRestService {
       const msg = err instanceof Error ? err.message : String(err);
       logger.error('Unexpected error in FirebaseAuthRestService.createUser:', msg);
       throw new BadGatewayError(`Failed to create Firebase Authentication user: ${msg}`);
+    }
+  }
+
+  /**
+   * Updates a user's password in Firebase Authentication via Google Identity Toolkit REST API v1.
+   * Endpoint: POST https://identitytoolkit.googleapis.com/v1/projects/{projectId}/accounts:update
+   * Uses OAuth access token with identitytoolkit and cloud-platform scopes.
+   * Security: NEVER logs the password, includes it in error details, or stores it elsewhere.
+   */
+  public async updateUserPassword(
+    clientUid: string,
+    newPassword: string,
+    options: {
+      projectId: string;
+      serviceAccountJson: string;
+      customFetch?: typeof fetch;
+    }
+  ): Promise<{ uid: string }> {
+    if (!clientUid || !clientUid.trim()) {
+      throw new BadRequestError('A valid client UID is required for password update.');
+    }
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6 || newPassword.length > 128) {
+      throw new BadRequestError('Password must be a valid string between 6 and 128 characters.');
+    }
+
+    const cleanUid = clientUid.trim();
+    const fetchImpl = options.customFetch || fetch;
+
+    try {
+      const { accessToken } = await getGoogleAccessToken(options.serviceAccountJson, {
+        customFetch: options.customFetch,
+        scopes: 'https://www.googleapis.com/auth/identitytoolkit https://www.googleapis.com/auth/cloud-platform'
+      });
+
+      const url = `https://identitytoolkit.googleapis.com/v1/projects/${options.projectId}/accounts:update`;
+
+      const response = await fetchImpl(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        body: JSON.stringify({
+          localId: cleanUid,
+          password: newPassword
+        })
+      });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        let errorMsg = `IdentityToolkit accounts:update returned HTTP ${response.status}`;
+        let errorCode = '';
+
+        try {
+          const parsed = JSON.parse(errorBody);
+          if (parsed?.error?.message) {
+            errorCode = parsed.error.message;
+            errorMsg = parsed.error.message;
+          }
+        } catch {
+          // ignore parse error
+        }
+
+        logger.error(`IdentityToolkit accounts:update failed for UID ${cleanUid}: status=${response.status}, error=${errorMsg}`);
+
+        if (errorCode.includes('USER_NOT_FOUND')) {
+          throw new NotFoundError(`User account '${cleanUid}' was not found in Firebase Authentication.`);
+        }
+        if (errorCode.includes('WEAK_PASSWORD') || errorCode.includes('INVALID_PASSWORD')) {
+          throw new BadRequestError('Password is invalid. Firebase requires a password with at least 6 characters.');
+        }
+        if (errorCode.includes('USER_DISABLED')) {
+          throw new ForbiddenError(`User account '${cleanUid}' is disabled in Firebase Authentication.`);
+        }
+
+        throw new BadGatewayError(`Firebase Authentication password update failed: ${errorMsg}`);
+      }
+
+      const data = (await response.json()) as { localId?: string };
+      logger.info(`Successfully updated Firebase Auth password for client UID: ${cleanUid}`);
+
+      return {
+        uid: data?.localId || cleanUid
+      };
+    } catch (err) {
+      if (
+        err instanceof BadRequestError ||
+        err instanceof NotFoundError ||
+        err instanceof ForbiddenError ||
+        err instanceof BadGatewayError
+      ) {
+        throw err;
+      }
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error(`Unexpected error updating password for UID ${cleanUid}:`, msg);
+      throw new BadGatewayError(`Failed to update Firebase Authentication password: ${msg}`);
     }
   }
 

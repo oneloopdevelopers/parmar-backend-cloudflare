@@ -193,6 +193,28 @@ export async function runAdminEndpointsTests() {
       return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
     }
 
+    if (url.includes('identitytoolkit.googleapis.com/v1/projects') && url.includes('/accounts:update')) {
+      const body = JSON.parse(init?.body as string);
+      const acc = memoryAuthAccounts.get(body.localId);
+      if (!acc) {
+        return new Response(
+          JSON.stringify({ error: { message: 'USER_NOT_FOUND', code: 404 } }),
+          { status: 404, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (body.password && body.password.length < 6) {
+        return new Response(
+          JSON.stringify({ error: { message: 'WEAK_PASSWORD : Password should be at least 6 characters', code: 400 } }),
+          { status: 400, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      acc.password = body.password;
+      return new Response(
+        JSON.stringify({ localId: body.localId, email: acc.email }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } }
+      );
+    }
+
     if (url.includes('identitytoolkit.googleapis.com/v1/projects') && url.includes('/accounts')) {
       const body = JSON.parse(init?.body as string);
       // Check if email already exists in memoryAuthAccounts
@@ -2506,6 +2528,286 @@ export async function runAdminEndpointsTests() {
       assert.ok(allowOriginHeader === '*' || allowOriginHeader === 'https://admin.portal.example.com', `Access-Control-Allow-Origin must be valid. Got: ${allowOriginHeader}`);
 
       console.log('✓ Test 37 Passed: CORS OPTIONS preflight verifies PATCH in Access-Control-Allow-Methods and all required headers');
+    }
+
+    // ==========================================
+    // TESTS 38-48: Admin Client Password Reset (POST /api/admin/clients/:clientId/reset-password)
+    // ==========================================
+
+    // Test 38: Unauthenticated request rejected with 401 Unauthorized
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ newPassword: 'NewSecurePassword123' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 401, 'Password reset without token must return 401 Unauthorized');
+      console.log('✓ Test 38 Passed: Password reset without token returns 401 Unauthorized');
+    }
+
+    // Test 39: Non-admin caller rejected with 403 Forbidden
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-client-nonadmin'
+          },
+          body: JSON.stringify({ newPassword: 'NewSecurePassword123' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Password reset by ordinary client must return 403 Forbidden');
+      console.log('✓ Test 39 Passed: Password reset by non-admin caller returns 403 Forbidden');
+    }
+
+    // Test 40: Inactive admin caller rejected with 403 Forbidden
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-inactive'
+          },
+          body: JSON.stringify({ newPassword: 'NewSecurePassword123' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Password reset by inactive admin must return 403 Forbidden');
+      console.log('✓ Test 40 Passed: Password reset by inactive admin returns 403 Forbidden');
+    }
+
+    // Test 41: Malformed client ID / path traversal rejected with 400 Bad Request
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/%2E%2E%2Fevil/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ newPassword: 'NewSecurePassword123' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Malformed client ID must return 400 Bad Request');
+      console.log('✓ Test 41 Passed: Malformed client ID / path traversal rejected with 400 Bad Request');
+    }
+
+    // Test 42: Non-existent client profile returns 404 Not Found
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/non-existent-client-999/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ newPassword: 'NewSecurePassword123' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 404, 'Non-existent client profile must return 404 Not Found');
+      const body = await res.json() as any;
+      assert.ok(body.error.message.includes('not found'));
+      console.log('✓ Test 42 Passed: Non-existent client profile returns 404 Not Found');
+    }
+
+    // Test 43: Target is an admin account (role !== 'client') returns 400 Bad Request
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/admin-user-1/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ newPassword: 'NewSecurePassword123' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Attempting to reset an admin password must return 400 Bad Request');
+      const body = await res.json() as any;
+      assert.ok(body.error.message.includes('not a client'));
+      console.log('✓ Test 43 Passed: Attempting to reset non-client account returns 400 Bad Request');
+    }
+
+    // Test 44: Target is an inactive client returns 403 Forbidden (no silent reactivation)
+    {
+      // Seed inactive client
+      memoryUsers.set('client-inactive-target', {
+        name: 'Inactive Client',
+        email: 'inactive@example.com',
+        phone: '+919876543299',
+        panNumber: 'ABCDE9999Z',
+        role: 'client',
+        status: 'inactive',
+        createdAt: new Date().toISOString()
+      });
+      memoryAuthAccounts.set('client-inactive-target', {
+        localId: 'client-inactive-target',
+        email: 'inactive@example.com',
+        password: 'OldPassword123'
+      });
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-inactive-target/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ newPassword: 'NewSecurePassword123' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 403, 'Resetting password for inactive client must return 403 Forbidden');
+      const body = await res.json() as any;
+      assert.ok(body.error.message.toLowerCase().includes('inactive'));
+
+      // Verify inactive status was preserved and password unchanged in Auth
+      assert.strictEqual(memoryUsers.get('client-inactive-target').status, 'inactive');
+      assert.strictEqual(memoryAuthAccounts.get('client-inactive-target').password, 'OldPassword123');
+      console.log('✓ Test 44 Passed: Password reset for inactive client rejected with 403 Forbidden and status preserved');
+    }
+
+    // Test 45: Zero-trust body check (rejects attempts to inject identity or role fields in body)
+    {
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({
+            newPassword: 'NewSecurePassword123',
+            role: 'admin',
+            uid: 'admin-override'
+          })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(res.status, 400, 'Payload with forbidden identity/role keys must return 400 Bad Request');
+      console.log('✓ Test 45 Passed: Zero-trust guard rejects forbidden identity/role overrides in reset body');
+    }
+
+    // Test 46: Password validation boundaries (rejects missing, non-string, <6 chars, >128 chars)
+    {
+      // Missing newPassword
+      const resMissing = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token-admin-valid' },
+          body: JSON.stringify({})
+        }),
+        workerEnv
+      );
+      assert.strictEqual(resMissing.status, 400, 'Missing newPassword must return 400');
+
+      // Short password (< 6 chars)
+      const resShort = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token-admin-valid' },
+          body: JSON.stringify({ newPassword: '12345' })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(resShort.status, 400, 'Password < 6 characters must return 400');
+
+      // Long password (> 128 chars)
+      const resLong = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token-admin-valid' },
+          body: JSON.stringify({ newPassword: 'A'.repeat(129) })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(resLong.status, 400, 'Password > 128 characters must return 400');
+
+      // Non-string password
+      const resNonString = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer token-admin-valid' },
+          body: JSON.stringify({ newPassword: 12345678 })
+        }),
+        workerEnv
+      );
+      assert.strictEqual(resNonString.status, 400, 'Non-string password must return 400');
+
+      console.log('✓ Test 46 Passed: Password validation boundaries (missing, short, long, non-string) enforced');
+    }
+
+    // Test 47: Valid password reset succeeds (200 OK) and updates Firebase Auth without touching Firestore
+    {
+      // Seed client-user-1 as active in memoryUsers and Auth
+      memoryUsers.set('client-user-1', {
+        ...memoryUsers.get('client-user-1'),
+        status: 'active'
+      });
+      memoryAuthAccounts.set('client-user-1', {
+        localId: 'client-user-1',
+        email: 'client@example.com',
+        password: 'InitialPassword123'
+      });
+
+      const initialFirestoreUser = { ...memoryUsers.get('client-user-1') };
+
+      const res = await app.fetch(
+        new Request('https://worker.local/api/admin/clients/client-user-1/reset-password', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: 'Bearer token-admin-valid'
+          },
+          body: JSON.stringify({ newPassword: 'SuperStrongNewPassword#2026' })
+        }),
+        workerEnv
+      );
+
+      assert.strictEqual(res.status, 200, 'Valid password reset must return 200 OK');
+      const body = await res.json() as any;
+      assert.strictEqual(body.success, true);
+      assert.strictEqual(body.clientId, 'client-user-1');
+      assert.strictEqual(body.message, 'Client password reset successfully.');
+
+      // Verify password in response does NOT leak
+      assert.strictEqual(body.newPassword, undefined, 'Response must never leak password');
+      assert.strictEqual(body.password, undefined, 'Response must never leak password');
+
+      // Verify Firebase Auth password was updated
+      const authUser = memoryAuthAccounts.get('client-user-1');
+      assert.strictEqual(authUser.password, 'SuperStrongNewPassword#2026');
+
+      // Verify Firestore user record was NOT modified and NO password was stored in Firestore
+      const currentFirestoreUser = memoryUsers.get('client-user-1');
+      assert.strictEqual(currentFirestoreUser.password, undefined, 'Firestore record must never contain password');
+      assert.strictEqual(currentFirestoreUser.newPassword, undefined, 'Firestore record must never contain newPassword');
+      assert.strictEqual(currentFirestoreUser.status, initialFirestoreUser.status, 'Client status must remain unchanged');
+      assert.strictEqual(currentFirestoreUser.role, 'client', 'Client role must remain unchanged');
+
+      // Verify no-cache header
+      const cacheControl = res.headers.get('Cache-Control');
+      assert.ok(cacheControl && cacheControl.includes('no-store'), 'Cache-Control must contain no-store');
+
+      console.log('✓ Test 47 Passed: Valid password reset succeeds (200), updates Firebase Auth, and preserves Firestore strictly untouched');
+    }
+
+    // Test 48: Health endpoint lists adminClientResetPassword
+    {
+      const res = await app.fetch(new Request('https://worker.local/api/health'), workerEnv);
+      assert.strictEqual(res.status, 200);
+      const body = await res.json() as any;
+      assert.ok(body.data.endpoints.adminClientResetPassword, 'Health check must list adminClientResetPassword endpoint');
+      console.log('✓ Test 48 Passed: Health check endpoint lists adminClientResetPassword');
     }
 
     console.log('\n--- All STEP 26A, 26D & 26E Admin Client and Document API Tests Passed Successfully! ---\n');

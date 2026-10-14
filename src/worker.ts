@@ -8,7 +8,7 @@ import { firestoreRestService } from './services/firestoreRestService';
 import { googleDriveRestService, DriveRestOptions } from './services/googleDriveRestService';
 import { validateUploadedFile, MAX_UPLOAD_FILE_SIZE_BYTES } from './utils/fileValidationUtils';
 import { logger } from './utils/logger';
-import { validateCreateClientInput } from './utils/adminValidation';
+import { validateCreateClientInput, validateResetPasswordInput } from './utils/adminValidation';
 import { adminClientService } from './services/adminClientService';
 import {
   generateOAuthState,
@@ -368,6 +368,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
         adminClientsList: 'GET /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientsCreate: 'POST /api/admin/clients (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientStatusUpdate: 'PATCH /api/admin/clients/:clientId/status (Protected - Requires Admin Bearer <Firebase ID Token>)',
+        adminClientResetPassword: 'POST /api/admin/clients/:clientId/reset-password (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentsList: 'GET /api/admin/clients/:clientId/documents (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentDownload: 'GET /api/admin/clients/:clientId/documents/:documentId/download (Protected - Requires Admin Bearer <Firebase ID Token>)',
         adminClientDocumentUpload: 'POST /api/admin/clients/:clientId/documents/upload (Protected - Requires Admin Bearer <Firebase ID Token>)',
@@ -1674,6 +1675,62 @@ export function createWorkerApp(options?: WorkerAppOptions) {
       }
     );
 
+    return c.json(result, 200);
+  });
+
+  // ==========================================
+  // ROUTE 8C: POST /api/admin/clients/:clientId/reset-password (Protected - Admin Only)
+  // Securely updates client password in Firebase Authentication.
+  // ==========================================
+  app.post('/api/admin/clients/:clientId/reset-password', requireAdminAuth, async (c) => {
+    const adminUid = c.get('verifiedUid');
+    const rawClientId = c.req.param('clientId');
+
+    if (!rawClientId || typeof rawClientId !== 'string' || !rawClientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+
+    const clientId = rawClientId.trim();
+
+    // Prevent path traversal, directory separators, null bytes, and malformed characters
+    if (clientId.includes('/') || clientId.includes('\\') || clientId.includes('..') || !/^[a-zA-Z0-9_-]{1,128}$/.test(clientId)) {
+      throw new BadRequestError('Security violation: Invalid client UID format. Path traversal and malformed identifiers are strictly prohibited.');
+    }
+
+    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+    const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+
+    if (!serviceAccountJson) {
+      throw new AppError(500, 'Server configuration error: FIREBASE_SERVICE_ACCOUNT_JSON is missing.', 'SERVER_CONFIG_ERROR');
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      throw new BadRequestError('Invalid JSON request body.');
+    }
+
+    // Strict validation of input and zero-trust prohibition of identity/role overrides
+    const validatedInput = validateResetPasswordInput(body);
+
+    logger.info(`Worker: Processing password reset for client UID: '${clientId}' by admin UID: '${adminUid}'`);
+
+    const result = await adminClientService.resetClientPassword(
+      clientId,
+      validatedInput.newPassword,
+      {
+        projectId,
+        serviceAccountJson
+      }
+    );
+
+    // Audit logging: log ONLY safe metadata (adminUid, clientId, action, timestamp). NEVER log password.
+    logger.info(
+      `Audit: Admin reset client password: adminUid='${adminUid}', clientId='${clientId}', action='ADMIN_RESET_CLIENT_PASSWORD', timestamp='${new Date().toISOString()}'`
+    );
+
+    c.header('Cache-Control', 'private, no-cache, no-store, must-revalidate');
     return c.json(result, 200);
   });
 

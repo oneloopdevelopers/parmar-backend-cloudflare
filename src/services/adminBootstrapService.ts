@@ -24,15 +24,15 @@ export const BOOTSTRAP_ADMIN_NAME = 'Administrator';
  * Executes a one-time bootstrap operation to provision the initial Administrator account.
  * 
  * Rules:
- * 1. Checks if the account support@oneloop.co.in already exists in Firebase Auth.
+ * 1. Checks if the account docs.parmar@gmail.com already exists in Firebase Auth.
  * 2. If already exists:
  *    - Check users/{existingUid} in Firestore.
  *    - If role === 'admin' and status === 'active', reports 'already_exists'.
  *    - If role is not admin, returns 'attention_required' and DOES NOT automatically elevate without review.
  * 3. If does not exist:
- *    - Creates Firebase Authentication account (displayName: 'Administrator', email: support@oneloop.co.in).
+ *    - Creates Firebase Authentication account (displayName: 'Administrator', email: docs.parmar@gmail.com).
  *    - Creates Firestore document users/{UID} with:
- *      name: 'Administrator', email: 'support@oneloop.co.in', phone: '', role: 'admin', status: 'active'.
+ *      name: 'Administrator', email: 'docs.parmar@gmail.com', phone: '', role: 'admin', status: 'active'.
  *    - Password is NEVER stored or written to Firestore.
  *    - No driveFolderId or panNumber is created.
  *    - Rollback safety: If Firestore profile creation fails, the newly created Firebase Auth user is deleted.

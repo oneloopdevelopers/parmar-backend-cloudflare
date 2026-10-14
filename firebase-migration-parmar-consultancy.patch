@@ -1,0 +1,865 @@
+diff --git a/README.md b/README.md
+index 842fc6c..a5b7dab 100644
+--- a/README.md
++++ b/README.md
+@@ -2,13 +2,13 @@
+ 
+ This project is a dedicated **server-side REST API backend** configured to connect directly with your existing Firebase project:
+ 
+-**Target Firebase Project ID:** `document-portal-d2b6d`
++**Target Firebase Project ID:** `parmar-consultancy`
+ 
+ ---
+ 
+ ## Architecture & Security Principles
+ 
+-1. **Shared Existing Firebase Project (`document-portal-d2b6d`)**:
++1. **Shared Existing Firebase Project (`parmar-consultancy`)**:
+    - Uses the exact same Firebase Project as the Android client app.
+    - Does **not** create a new Firebase project, auth realm, or separate database.
+    - Reads directly from the shared Firestore database collection (`users/{firebaseUid}`).
+@@ -33,7 +33,7 @@ This project is a dedicated **server-side REST API backend** configured to conne
+ | Method | Endpoint | Auth Required | Description |
+ |---|---|---|---|
+ | `GET` | `/api/health` | No | Public health check, server status & Firebase Admin status |
+-| `GET` | `/api/health/firebase` | Optional | Verifies Firebase Admin SDK initialization & live Firestore communication on project `document-portal-d2b6d` |
++| `GET` | `/api/health/firebase` | Optional | Verifies Firebase Admin SDK initialization & live Firestore communication on project `parmar-consultancy` |
+ | `GET` | `/api/profile` | **Yes** (Bearer Token) | Returns user profile (`name`, `email`, `phone`, `maskedPanNumber`, `role`, `status`) from Firestore `users/{firebaseUid}` |
+ 
+ > **Note on Future Capabilities**: As requested, Google Drive integration and document upload/download endpoints (`/api/documents`) are deferred for the subsequent phase.
+@@ -46,7 +46,7 @@ The module safely manages initialization and exports:
+ - `auth`: Firebase Authentication instance & token verification (`getAuthInstance()`)
+ - `db`: Cloud Firestore instance (`getFirestoreInstance()`)
+ - `validateFirebaseAdminStartup()`: Startup validation reporting initialization status to console logs.
+-- `testFirestoreConnectivity()`: Validates live communication with Cloud Firestore on project `document-portal-d2b6d`.
++- `testFirestoreConnectivity()`: Validates live communication with Cloud Firestore on project `parmar-consultancy`.
+ 
+ ---
+ 
+@@ -135,7 +135,7 @@ When deploying or running in production, configure the Firebase Admin SDK using
+ 
+ When running in Google Cloud environments (Cloud Run):
+ 1. Assign the **Firebase Authentication Viewer** and **Cloud Datastore User** (Firestore) IAM roles to the runtime service account.
+-2. The Firebase Admin SDK automatically authenticates via ADC targeting `document-portal-d2b6d` without requiring private key files!
++2. The Firebase Admin SDK automatically authenticates via ADC targeting `parmar-consultancy` without requiring private key files!
+ 
+ ### Method 2: Environment Variables (Cloud Run Secrets / Container Config)
+ 
+@@ -143,10 +143,10 @@ Set the following environment variables:
+ 
+ ```bash
+ # Firebase Project ID
+-FIREBASE_PROJECT_ID="document-portal-d2b6d"
++FIREBASE_PROJECT_ID="parmar-consultancy"
+ 
+ # Service Account Client Email
+-FIREBASE_CLIENT_EMAIL="firebase-adminsdk-xxxxx@document-portal-d2b6d.iam.gserviceaccount.com"
++FIREBASE_CLIENT_EMAIL="firebase-adminsdk-xxxxx@parmar-consultancy.iam.gserviceaccount.com"
+ 
+ # Service Account Private Key (include \n line breaks)
+ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC...\n-----END PRIVATE KEY-----\n"
+@@ -155,7 +155,7 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\nMIIEvgIBADANBgkqhkiG9w0BAQEFA
+ Alternatively, provide the entire JSON content in a single variable:
+ 
+ ```bash
+-FIREBASE_SERVICE_ACCOUNT_JSON='{"type":"service_account","project_id":"document-portal-d2b6d",...}'
++FIREBASE_SERVICE_ACCOUNT_JSON='{"type":"service_account","project_id":"parmar-consultancy",...}'
+ ```
+ 
+ ### Method 3: Service Account Key File (Local Development)
+diff --git a/scripts/bootstrap-admin.ts b/scripts/bootstrap-admin.ts
+index 0c2b5f1..6c72b72 100644
+--- a/scripts/bootstrap-admin.ts
++++ b/scripts/bootstrap-admin.ts
+@@ -51,7 +51,7 @@ async function main() {
+   console.log(`Target Admin Email: ${BOOTSTRAP_ADMIN_EMAIL}`);
+   console.log('');
+ 
+-  const projectId = process.env.FIREBASE_PROJECT_ID || 'document-portal-d2b6d';
++  const projectId = process.env.FIREBASE_PROJECT_ID || 'parmar-consultancy';
+   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+ 
+   if (!serviceAccountJson) {
+diff --git a/src/config/environment.ts b/src/config/environment.ts
+index ebd537a..d749088 100644
+--- a/src/config/environment.ts
++++ b/src/config/environment.ts
+@@ -7,7 +7,7 @@ export const config = {
+   nodeEnv: process.env.NODE_ENV || 'development',
+   isProduction: process.env.NODE_ENV === 'production',
+   firebase: {
+-    projectId: process.env.FIREBASE_PROJECT_ID || 'document-portal-d2b6d',
++    projectId: process.env.FIREBASE_PROJECT_ID || 'parmar-consultancy',
+     clientEmail: process.env.FIREBASE_CLIENT_EMAIL || '',
+     privateKey: process.env.FIREBASE_PRIVATE_KEY 
+       ? process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, '\n') 
+diff --git a/src/config/firebaseAdmin.ts b/src/config/firebaseAdmin.ts
+index a448006..71b0247 100644
+--- a/src/config/firebaseAdmin.ts
++++ b/src/config/firebaseAdmin.ts
+@@ -4,7 +4,7 @@ import { getFirestore, Firestore } from 'firebase-admin/firestore';
+ import { config } from './environment';
+ import { logger } from '../utils/logger';
+ 
+-export const TARGET_FIREBASE_PROJECT_ID = config.firebase.projectId || 'document-portal-d2b6d';
++export const TARGET_FIREBASE_PROJECT_ID = config.firebase.projectId || 'parmar-consultancy';
+ 
+ export interface FirebaseAdminStatus {
+   isInitialized: boolean;
+@@ -39,7 +39,7 @@ let adminStatus: FirebaseAdminStatus = {
+  * Strict Security Rules:
+  * 1. Parsed only on the server runtime; never sent to clients or browser.
+  * 2. Never prints or logs credential contents, tokens, or private keys.
+- * 3. Enforces that the service account's project_id matches TARGET_FIREBASE_PROJECT_ID ('document-portal-d2b6d').
++ * 3. Enforces that the service account's project_id matches TARGET_FIREBASE_PROJECT_ID ('parmar-consultancy').
+  * 4. Rejects malformed JSON, missing fields, or cross-project keys.
+  */
+ export function validateAndParseServiceAccountJson(
+@@ -71,7 +71,7 @@ export function validateAndParseServiceAccountJson(
+     throw new Error("FIREBASE_SERVICE_ACCOUNT_JSON is missing the required 'project_id' field.");
+   }
+ 
+-  // Strict project matching: Must match target project 'document-portal-d2b6d'
++  // Strict project matching: Must match target project 'parmar-consultancy'
+   if (projectId !== expectedProjectId) {
+     throw new Error(
+       `Project ID mismatch: Service account project_id '${projectId}' does not match authorized target project '${expectedProjectId}'. Only project '${expectedProjectId}' is allowed.`
+@@ -97,7 +97,7 @@ export function validateAndParseServiceAccountJson(
+ }
+ 
+ /**
+- * Initializes Firebase Admin SDK safely for existing Firebase project 'document-portal-d2b6d'.
++ * Initializes Firebase Admin SDK safely for existing Firebase project 'parmar-consultancy'.
+  * 
+  * Order of Precedence:
+  * 1. FIREBASE_SERVICE_ACCOUNT_JSON server-side secret (primary for AI Studio development/testing).
+diff --git a/src/middleware/authenticateFirebaseUser.ts b/src/middleware/authenticateFirebaseUser.ts
+index 8591cec..dca2699 100644
+--- a/src/middleware/authenticateFirebaseUser.ts
++++ b/src/middleware/authenticateFirebaseUser.ts
+@@ -83,7 +83,6 @@ export function createAuthenticateFirebaseUser(deps?: AuthenticateFirebaseUserDe
+ 
+     try {
+       const auth = getAuth();
+-      const db = getDb();
+ 
+       // 3. Verify the token using Firebase Admin SDK
+       let decodedToken: any;
+@@ -155,6 +154,7 @@ export function createAuthenticateFirebaseUser(deps?: AuthenticateFirebaseUserDe
+       // 5. Retrieve the user profile from Firestore using: users/{firebaseUid}
+       let userDoc: any;
+       try {
++        const db = getDb();
+         const docRef = db.collection('users').doc(firebaseUid);
+         userDoc = await docRef.get();
+       } catch (firestoreErr: unknown) {
+diff --git a/src/routes/notification.routes.ts b/src/routes/notification.routes.ts
+index b025dab..009a8ab 100644
+--- a/src/routes/notification.routes.ts
++++ b/src/routes/notification.routes.ts
+@@ -9,7 +9,7 @@ import { BadRequestError } from '../utils/errors';
+ const router = Router();
+ 
+ const getServiceContext = () => ({
+-  projectId: config.firebase.projectId || 'document-portal-d2b6d',
++  projectId: config.firebase.projectId || 'parmar-consultancy',
+   serviceAccountJson: config.firebase.serviceAccountJson || ''
+ });
+ 
+diff --git a/src/services/fcmService.ts b/src/services/fcmService.ts
+index 2d65137..6bed679 100644
+--- a/src/services/fcmService.ts
++++ b/src/services/fcmService.ts
+@@ -264,7 +264,7 @@ export class FcmService {
+         customFetch: ctx.customFetch
+       });
+ 
+-      const targetProjectId = ctx.projectId || saProjectId || 'document-portal-d2b6d';
++      const targetProjectId = ctx.projectId || saProjectId || 'parmar-consultancy';
+       const fcmUrl = `https://fcm.googleapis.com/v1/projects/${targetProjectId}/messages:send`;
+ 
+       // Safe HTTP v1 DATA-ONLY message structure compliant with Android FcmPayloadParser.
+diff --git a/src/services/firebaseTokenVerifier.ts b/src/services/firebaseTokenVerifier.ts
+index 3a671bc..764042f 100644
+--- a/src/services/firebaseTokenVerifier.ts
++++ b/src/services/firebaseTokenVerifier.ts
+@@ -47,7 +47,7 @@ export async function verifyFirebaseIdToken(
+   }
+ 
+   const cleanToken = token.trim();
+-  const projectId = options?.projectId || 'document-portal-d2b6d';
++  const projectId = options?.projectId || 'parmar-consultancy';
+   const expectedIssuer = `https://securetoken.google.com/${projectId}`;
+   const keyResolver = options?.keyResolver || getRemoteJwks();
+ 
+diff --git a/src/services/googleOAuthService.ts b/src/services/googleOAuthService.ts
+index 4ec9280..210e2cf 100644
+--- a/src/services/googleOAuthService.ts
++++ b/src/services/googleOAuthService.ts
+@@ -749,7 +749,7 @@ export async function getGoogleDriveOAuthAccessToken(
+   const projectId =
+     (env?.FIREBASE_PROJECT_ID as string) ||
+     (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
+-    'document-portal-d2b6d';
++    'parmar-consultancy';
+ 
+   const serviceAccountJson =
+     env?.FIREBASE_SERVICE_ACCOUNT_JSON ||
+@@ -859,7 +859,7 @@ export async function diagnoseGoogleDriveOAuthRefresh(
+   const projectId =
+     (env?.FIREBASE_PROJECT_ID as string) ||
+     (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
+-    'document-portal-d2b6d';
++    'parmar-consultancy';
+ 
+   const serviceAccountJson =
+     env?.FIREBASE_SERVICE_ACCOUNT_JSON ||
+diff --git a/src/tests/adminBootstrap.test.ts b/src/tests/adminBootstrap.test.ts
+index fceafed..adb9264 100644
+--- a/src/tests/adminBootstrap.test.ts
++++ b/src/tests/adminBootstrap.test.ts
+@@ -15,11 +15,11 @@ export async function runAdminBootstrapTests() {
+   const { privateKey: saPrivateKey } = await generateKeyPair('RS256', { extractable: true });
+   const saPrivateKeyPem = await exportPKCS8(saPrivateKey);
+ 
+-  const projectId = 'document-portal-d2b6d';
++  const projectId = 'parmar-consultancy';
+   const testServiceAccountJson = JSON.stringify({
+     project_id: projectId,
+     private_key: saPrivateKeyPem,
+-    client_email: 'test-backend@document-portal-d2b6d.iam.gserviceaccount.com'
++    client_email: 'test-backend@parmar-consultancy.iam.gserviceaccount.com'
+   });
+ 
+   // Test state stores
+diff --git a/src/tests/adminEndpoints.test.ts b/src/tests/adminEndpoints.test.ts
+index cec1411..a0ee8cd 100644
+--- a/src/tests/adminEndpoints.test.ts
++++ b/src/tests/adminEndpoints.test.ts
+@@ -12,11 +12,11 @@ export async function runAdminEndpointsTests() {
+   const { privateKey: saPrivateKey } = await generateKeyPair('RS256', { extractable: true });
+   const saPrivateKeyPem = await exportPKCS8(saPrivateKey);
+ 
+-  const projectId = 'document-portal-d2b6d';
++  const projectId = 'parmar-consultancy';
+   const testServiceAccountJson = JSON.stringify({
+     project_id: projectId,
+     private_key: saPrivateKeyPem,
+-    client_email: 'test-backend@document-portal-d2b6d.iam.gserviceaccount.com'
++    client_email: 'test-backend@parmar-consultancy.iam.gserviceaccount.com'
+   });
+ 
+   const workerEnv = {
+@@ -228,7 +228,7 @@ export async function runAdminEndpointsTests() {
+         fullBody: body
+       });
+       return new Response(
+-        JSON.stringify({ name: 'projects/document-portal-d2b6d/messages/msg_fcm_mock' }),
++        JSON.stringify({ name: 'projects/parmar-consultancy/messages/msg_fcm_mock' }),
+         { status: 200, headers: { 'Content-Type': 'application/json' } }
+       );
+     }
+diff --git a/src/tests/authenticateFirebaseUser.test.ts b/src/tests/authenticateFirebaseUser.test.ts
+index dcdd030..89e347a 100644
+--- a/src/tests/authenticateFirebaseUser.test.ts
++++ b/src/tests/authenticateFirebaseUser.test.ts
+@@ -97,7 +97,7 @@ async function runTests() {
+ 
+     const middleware = createAuthenticateFirebaseUser({
+       getAuth: () => mockAuth,
+-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
++      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
+     });
+ 
+     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer expired-jwt-token' });
+@@ -122,7 +122,7 @@ async function runTests() {
+ 
+     const middleware = createAuthenticateFirebaseUser({
+       getAuth: () => mockAuth,
+-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
++      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
+     });
+ 
+     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer invalid-token' });
+@@ -147,7 +147,7 @@ async function runTests() {
+ 
+     const middleware = createAuthenticateFirebaseUser({
+       getAuth: () => mockAuth,
+-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
++      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
+     });
+ 
+     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
+@@ -168,7 +168,7 @@ async function runTests() {
+ 
+     const middleware = createAuthenticateFirebaseUser({
+       getAuth: () => mockAuth,
+-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
++      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
+     });
+ 
+     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
+@@ -198,7 +198,7 @@ async function runTests() {
+     const middleware = createAuthenticateFirebaseUser({
+       getAuth: () => mockAuth,
+       getDb: () => mockDb,
+-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
++      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
+     });
+ 
+     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
+@@ -235,7 +235,7 @@ async function runTests() {
+     const middleware = createAuthenticateFirebaseUser({
+       getAuth: () => mockAuth,
+       getDb: () => mockDb,
+-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
++      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
+     });
+ 
+     const { req, res, next, getNextError } = createMockContext({ authorization: 'Bearer valid-jwt-token' });
+@@ -254,7 +254,7 @@ async function runTests() {
+         uid: 'valid_client_uid_123',
+         email: 'client@example.com',
+         email_verified: true,
+-        aud: 'document-portal-d2b6d'
++        aud: 'parmar-consultancy'
+       }),
+       getUser: async () => ({ uid: 'valid_client_uid_123', disabled: false })
+     };
+@@ -287,7 +287,7 @@ async function runTests() {
+     const middleware = createAuthenticateFirebaseUser({
+       getAuth: () => mockAuth,
+       getDb: () => mockDb,
+-      getStatus: () => ({ isInitialized: true, projectId: 'document-portal-d2b6d', authMethod: 'application_default', message: 'ok' })
++      getStatus: () => ({ isInitialized: true, projectId: 'parmar-consultancy', authMethod: 'application_default', message: 'ok' })
+     });
+ 
+     const { req, res, next, getNextError, wasNextCalled } = createMockContext({ authorization: 'Bearer valid-live-token' });
+diff --git a/src/tests/fcmService.test.ts b/src/tests/fcmService.test.ts
+index 88c6b02..2414f2c 100644
+--- a/src/tests/fcmService.test.ts
++++ b/src/tests/fcmService.test.ts
+@@ -14,7 +14,7 @@ export async function runFcmServiceTests() {
+   const { privateKey: saPrivateKey } = await generateKeyPair('RS256', { extractable: true });
+   const saPrivateKeyPem = await exportPKCS8(saPrivateKey);
+ 
+-  const projectId = 'document-portal-d2b6d';
++  const projectId = 'parmar-consultancy';
+   const serviceAccountJson = JSON.stringify({
+     project_id: projectId,
+     client_email: 'fcm-test@example.com',
+@@ -332,7 +332,7 @@ export async function runFcmServiceTests() {
+       const targetToken = body.message?.token;
+ 
+       if (targetToken === validToken) {
+-        return new Response(JSON.stringify({ name: 'projects/document-portal-d2b6d/messages/msg_12345' }), {
++        return new Response(JSON.stringify({ name: 'projects/parmar-consultancy/messages/msg_12345' }), {
+           status: 200,
+           headers: { 'Content-Type': 'application/json' }
+         });
+diff --git a/src/tests/firebaseAdminConfig.test.ts b/src/tests/firebaseAdminConfig.test.ts
+index 5750c56..249db23 100644
+--- a/src/tests/firebaseAdminConfig.test.ts
++++ b/src/tests/firebaseAdminConfig.test.ts
+@@ -66,15 +66,15 @@ async function runFirebaseAdminConfigTests() {
+   });
+ 
+   // 5. Strictly rejects project ID mismatch
+-  await test('5. Strictly rejects project_id that does not match document-portal-d2b6d', () => {
++  await test('5. Strictly rejects project_id that does not match parmar-consultancy', () => {
+     const wrongProjectJson = JSON.stringify({
+       project_id: 'some-other-unauthorized-project',
+       client_email: 'test@some-other.iam.gserviceaccount.com',
+       private_key: '-----BEGIN PRIVATE KEY-----\nfake-key\n-----END PRIVATE KEY-----\n'
+     });
+     assert.throws(
+-      () => validateAndParseServiceAccountJson(wrongProjectJson, 'document-portal-d2b6d'),
+-      /Project ID mismatch: Service account project_id 'some-other-unauthorized-project' does not match authorized target project 'document-portal-d2b6d'/
++      () => validateAndParseServiceAccountJson(wrongProjectJson, 'parmar-consultancy'),
++      /Project ID mismatch: Service account project_id 'some-other-unauthorized-project' does not match authorized target project 'parmar-consultancy'/
+     );
+   });
+ 
+@@ -94,7 +94,7 @@ async function runFirebaseAdminConfigTests() {
+   await test('7. Rejects JSON with missing private_key', () => {
+     const json = JSON.stringify({
+       project_id: TARGET_FIREBASE_PROJECT_ID,
+-      client_email: 'admin@document-portal-d2b6d.iam.gserviceaccount.com'
++      client_email: 'admin@parmar-consultancy.iam.gserviceaccount.com'
+     });
+     assert.throws(
+       () => validateAndParseServiceAccountJson(json),
+@@ -102,20 +102,20 @@ async function runFirebaseAdminConfigTests() {
+     );
+   });
+ 
+-  // 8. Successfully parses and normalizes valid document-portal-d2b6d service account
+-  await test('8. Successfully validates and parses authentic document-portal-d2b6d service account', () => {
++  // 8. Successfully parses and normalizes valid parmar-consultancy service account
++  await test('8. Successfully validates and parses authentic parmar-consultancy service account', () => {
+     const validJson = JSON.stringify({
+       type: 'service_account',
+-      project_id: 'document-portal-d2b6d',
++      project_id: 'parmar-consultancy',
+       private_key_id: 'key123',
+       private_key: '-----BEGIN PRIVATE KEY-----\\nMIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQC3\\n-----END PRIVATE KEY-----\\n',
+-      client_email: 'firebase-adminsdk-test@document-portal-d2b6d.iam.gserviceaccount.com',
++      client_email: 'firebase-adminsdk-test@parmar-consultancy.iam.gserviceaccount.com',
+       client_id: '123456789'
+     });
+ 
+-    const parsed = validateAndParseServiceAccountJson(validJson, 'document-portal-d2b6d');
+-    assert.strictEqual(parsed.project_id, 'document-portal-d2b6d');
+-    assert.strictEqual(parsed.client_email, 'firebase-adminsdk-test@document-portal-d2b6d.iam.gserviceaccount.com');
++    const parsed = validateAndParseServiceAccountJson(validJson, 'parmar-consultancy');
++    assert.strictEqual(parsed.project_id, 'parmar-consultancy');
++    assert.strictEqual(parsed.client_email, 'firebase-adminsdk-test@parmar-consultancy.iam.gserviceaccount.com');
+     // Ensure escaped newlines are normalized
+     assert.ok(parsed.private_key.includes('\n'));
+     assert.ok(!parsed.private_key.includes('\\n'));
+diff --git a/src/tests/firebaseTokenVerifier.test.ts b/src/tests/firebaseTokenVerifier.test.ts
+index 84c80d7..33df515 100644
+--- a/src/tests/firebaseTokenVerifier.test.ts
++++ b/src/tests/firebaseTokenVerifier.test.ts
+@@ -7,7 +7,7 @@ async function runFirebaseTokenVerifierTests() {
+ 
+   // Generate an RSA key pair for local JWT verification tests
+   const { privateKey, publicKey } = await generateKeyPair('RS256');
+-  const projectId = 'document-portal-d2b6d';
++  const projectId = 'parmar-consultancy';
+   const expectedIssuer = `https://securetoken.google.com/${projectId}`;
+ 
+   // Custom key resolver that returns our test public key
+diff --git a/src/tests/firestoreRestService.test.ts b/src/tests/firestoreRestService.test.ts
+index 15d3759..53f01c6 100644
+--- a/src/tests/firestoreRestService.test.ts
++++ b/src/tests/firestoreRestService.test.ts
+@@ -69,9 +69,9 @@ async function runFirestoreRestServiceTests() {
+   const { privateKey } = await generateKeyPair('RS256', { extractable: true });
+   const privateKeyPem = await exportPKCS8(privateKey);
+   const testServiceAccountJson = JSON.stringify({
+-    project_id: 'document-portal-d2b6d',
++    project_id: 'parmar-consultancy',
+     private_key: privateKeyPem,
+-    client_email: 'test@document-portal-d2b6d.iam.gserviceaccount.com'
++    client_email: 'test@parmar-consultancy.iam.gserviceaccount.com'
+   });
+ 
+   // Test 3: getClientProfile with simulated fetch
+@@ -91,7 +91,7 @@ async function runFirestoreRestServiceTests() {
+       if (url.includes('/users/test-uid-active')) {
+         return new Response(
+           JSON.stringify({
+-            name: 'projects/document-portal-d2b6d/databases/(default)/documents/users/test-uid-active',
++            name: 'projects/parmar-consultancy/databases/(default)/documents/users/test-uid-active',
+             fields: {
+               name: { stringValue: 'Active Client' },
+               email: { stringValue: 'active@example.com' },
+@@ -117,7 +117,7 @@ async function runFirestoreRestServiceTests() {
+     }) as any;
+ 
+     const profile = await service.getClientProfile('test-uid-active', {
+-      projectId: 'document-portal-d2b6d',
++      projectId: 'parmar-consultancy',
+       serviceAccountJson: testServiceAccountJson,
+       customFetch: mockFetch
+     });
+@@ -132,7 +132,7 @@ async function runFirestoreRestServiceTests() {
+     await assert.rejects(
+       async () => {
+         await service.getClientProfile('test-uid-not-found', {
+-          projectId: 'document-portal-d2b6d',
++          projectId: 'parmar-consultancy',
+           serviceAccountJson: testServiceAccountJson,
+           customFetch: mockFetch
+         });
+diff --git a/src/tests/googleDriveService.test.ts b/src/tests/googleDriveService.test.ts
+index 9179f55..56d5b3d 100644
+--- a/src/tests/googleDriveService.test.ts
++++ b/src/tests/googleDriveService.test.ts
+@@ -4,6 +4,9 @@ import { testDriveAccess } from '../controllers/drive.controller';
+ import { enforceZeroTrustIdentity } from '../middleware/validation.middleware';
+ import { AuthenticatedRequest } from '../types';
+ 
++import { config } from '../config/environment';
++import { generateKeyPair, exportPKCS8 } from 'jose';
++
+ let testsPassed = 0;
+ function pass(desc: string) {
+   testsPassed++;
+@@ -14,7 +17,16 @@ async function runTests() {
+   console.log('\n--- Starting Tests for Google Drive Service & /api/drive/test ---');
+ 
+   // Test 1: Instantiation of Drive client
++  const originalSa = config.firebase.serviceAccountJson;
+   try {
++    const { privateKey } = await generateKeyPair('RS256', { extractable: true });
++    const privateKeyPem = await exportPKCS8(privateKey);
++    config.firebase.serviceAccountJson = JSON.stringify({
++      project_id: 'parmar-consultancy',
++      private_key: privateKeyPem,
++      client_email: 'test@parmar-consultancy.iam.gserviceaccount.com'
++    });
++
+     const driveClient = googleDriveService.createDriveClient();
+     assert(driveClient !== null && driveClient !== undefined, 'Drive client must not be null');
+     assert(typeof driveClient.files.get === 'function', 'Drive client must have files.get');
+@@ -22,6 +34,8 @@ async function runTests() {
+     pass('1. googleDriveService.createDriveClient() successfully instantiates Drive v3 client');
+   } catch (err: any) {
+     assert.fail(`Test 1 failed: ${err.message}`);
++  } finally {
++    config.firebase.serviceAccountJson = originalSa;
+   }
+ 
+   // Test 2: Zero-trust middleware rejects driveFolderId in query
+diff --git a/src/tests/googleOAuthService.test.ts b/src/tests/googleOAuthService.test.ts
+index 9c1fd3a..b627a89 100644
+--- a/src/tests/googleOAuthService.test.ts
++++ b/src/tests/googleOAuthService.test.ts
+@@ -257,7 +257,7 @@ async function runGoogleOAuthServiceTests() {
+ 
+   // 8a: When OAuth secrets are missing, returns null
+   const emptyEnv: Env = {
+-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d'
++    FIREBASE_PROJECT_ID: 'parmar-consultancy'
+   };
+   const noOAuthToken = await getGoogleDriveOAuthAccessToken(emptyEnv);
+   assert.strictEqual(noOAuthToken, null, 'Should return null when OAuth env variables are missing');
+@@ -271,11 +271,11 @@ async function runGoogleOAuthServiceTests() {
+   };
+ 
+   const mockEnv: Env = {
+-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d',
++    FIREBASE_PROJECT_ID: 'parmar-consultancy',
+     FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+-      project_id: 'document-portal-d2b6d',
++      project_id: 'parmar-consultancy',
+       private_key: 'mock-key',
+-      client_email: 'mock-sa@document-portal-d2b6d.iam.gserviceaccount.com'
++      client_email: 'mock-sa@parmar-consultancy.iam.gserviceaccount.com'
+     }),
+     GOOGLE_OAUTH_CLIENT_ID: 'test-client-id',
+     GOOGLE_OAUTH_CLIENT_SECRET: 'test-client-secret',
+@@ -313,11 +313,11 @@ async function runGoogleOAuthServiceTests() {
+ 
+   const testSetupKey = 'my-super-secret-admin-setup-key-2026';
+   const workerEnv: Env = {
+-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d',
++    FIREBASE_PROJECT_ID: 'parmar-consultancy',
+     FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+-      project_id: 'document-portal-d2b6d',
++      project_id: 'parmar-consultancy',
+       private_key: 'mock-key',
+-      client_email: 'mock-sa@document-portal-d2b6d.iam.gserviceaccount.com'
++      client_email: 'mock-sa@parmar-consultancy.iam.gserviceaccount.com'
+     }),
+     GOOGLE_OAUTH_SETUP_KEY: testSetupKey,
+     GOOGLE_OAUTH_CLIENT_ID: 'test-oauth-client-id.apps.googleusercontent.com',
+@@ -589,11 +589,11 @@ async function runGoogleOAuthServiceTests() {
+ 
+   const diagSetupKey = 'super-secret-setup-key-12345';
+   const diagEnv: Env = {
+-    FIREBASE_PROJECT_ID: 'document-portal-d2b6d',
++    FIREBASE_PROJECT_ID: 'parmar-consultancy',
+     FIREBASE_SERVICE_ACCOUNT_JSON: JSON.stringify({
+-      project_id: 'document-portal-d2b6d',
++      project_id: 'parmar-consultancy',
+       private_key: 'mock-key',
+-      client_email: 'mock-sa@document-portal-d2b6d.iam.gserviceaccount.com'
++      client_email: 'mock-sa@parmar-consultancy.iam.gserviceaccount.com'
+     }),
+     GOOGLE_OAUTH_CLIENT_ID: 'test-client-id-123',
+     GOOGLE_OAUTH_CLIENT_SECRET: 'test-client-secret-xyz',
+diff --git a/src/tests/notificationWorker.test.ts b/src/tests/notificationWorker.test.ts
+index cbc9f6e..0e9104a 100644
+--- a/src/tests/notificationWorker.test.ts
++++ b/src/tests/notificationWorker.test.ts
+@@ -6,7 +6,7 @@ import { generateKeyPair, exportPKCS8, exportJWK, SignJWT } from 'jose';
+ export async function runNotificationWorkerTests() {
+   console.log('\n--- Starting Notification Centre Cloudflare Worker HTTP Endpoint Tests ---');
+ 
+-  const projectId = 'document-portal-d2b6d';
++  const projectId = 'parmar-consultancy';
+ 
+   // Generate test RSA keys for Firebase Auth & Service Account
+   const { privateKey: fbPrivateKey, publicKey: fbPublicKey } = await generateKeyPair('RS256', { extractable: true });
+diff --git a/src/tests/workerEndpoints.test.ts b/src/tests/workerEndpoints.test.ts
+index 2e80f33..aadebc9 100644
+--- a/src/tests/workerEndpoints.test.ts
++++ b/src/tests/workerEndpoints.test.ts
+@@ -10,12 +10,12 @@ async function runWorkerEndpointsTests() {
+   const { privateKey: saPrivateKey } = await generateKeyPair('RS256', { extractable: true });
+   const saPrivateKeyPem = await exportPKCS8(saPrivateKey);
+ 
+-  const projectId = 'document-portal-d2b6d';
++  const projectId = 'parmar-consultancy';
+ 
+   const testServiceAccountJson = JSON.stringify({
+     project_id: projectId,
+     private_key: saPrivateKeyPem,
+-    client_email: 'test-backend@document-portal-d2b6d.iam.gserviceaccount.com'
++    client_email: 'test-backend@parmar-consultancy.iam.gserviceaccount.com'
+   });
+ 
+   const workerEnv = {
+diff --git a/src/worker.ts b/src/worker.ts
+index 8bfa04d..a33577f 100644
+--- a/src/worker.ts
++++ b/src/worker.ts
+@@ -260,7 +260,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+       throw new UnauthorizedError('Authentication required. Bearer token is empty.');
+     }
+ 
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     let verified;
+     try {
+       verified = await tokenVerifier(token, { projectId });
+@@ -292,7 +292,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+       throw new UnauthorizedError('Administrator authentication required. Bearer token is empty.');
+     }
+ 
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     let verified;
+     try {
+       verified = await tokenVerifier(token, { projectId });
+@@ -342,7 +342,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ROUTE 1: GET /api/health (Public)
+   // ==========================================
+   app.get('/api/health', (c) => {
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const envName = (c.env?.NODE_ENV as string) || 'production';
+ 
+     const healthData = {
+@@ -395,7 +395,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ROUTE 2: GET /api/health/firebase
+   // ==========================================
+   app.get('/api/health/firebase', async (c) => {
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     let firestoreStatus: {
+@@ -850,7 +850,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+       const projectId =
+         (c.env?.FIREBASE_PROJECT_ID as string) ||
+         (typeof process !== 'undefined' ? process.env?.FIREBASE_PROJECT_ID : undefined) ||
+-        'document-portal-d2b6d';
++        'parmar-consultancy';
+       const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+       if (!clientId || !clientSecret || !encryptionKey || !serviceAccountJson) {
+@@ -910,7 +910,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================
+   app.get('/api/profile', requireAuth, async (c) => {
+     const uid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -950,7 +950,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================
+   app.post('/api/profile/fcm-token', requireAuth, async (c) => {
+     const callerUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -998,7 +998,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================
+   app.delete('/api/profile/fcm-token', requireAuth, async (c) => {
+     const callerUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1044,7 +1044,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================
+   app.get('/api/drive/test', requireAuth, async (c) => {
+     const uid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1099,7 +1099,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================
+   app.get('/api/documents', requireAuth, async (c) => {
+     const uid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1243,7 +1243,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+ 
+     // Identity MUST come exclusively from verified Firebase token
+     const uid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1364,7 +1364,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================================
+   app.post('/api/documents/upload', requireAuth, async (c) => {
+     const uid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1559,7 +1559,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================
+   app.get('/api/admin/clients', requireAdminAuth, async (c) => {
+     const adminUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1591,7 +1591,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ==========================================
+   app.post('/api/admin/clients', requireAdminAuth, async (c) => {
+     const adminUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1640,7 +1640,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+     }
+ 
+     const clientId = rawClientId.trim();
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1690,7 +1690,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+     }
+ 
+     const clientId = rawClientId.trim();
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1737,7 +1737,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+       throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
+     }
+ 
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1806,7 +1806,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+       throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
+     }
+ 
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1904,7 +1904,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+       throw new BadRequestError('Invalid document ID format. Malformed identifiers and path traversal are strictly prohibited.');
+     }
+ 
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -1973,7 +1973,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+       throw new BadRequestError('Content-Type must be multipart/form-data for document upload.');
+     }
+ 
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -2077,7 +2077,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ROUTE 12: GET /api/notifications (Client Protected)
+   app.get('/api/notifications', requireAuth, async (c) => {
+     const callerUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -2109,7 +2109,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ROUTE 13: GET /api/notifications/unread-count (Client Protected)
+   app.get('/api/notifications/unread-count', requireAuth, async (c) => {
+     const callerUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -2135,7 +2135,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   app.patch('/api/notifications/:notificationId/read', requireAuth, async (c) => {
+     const callerUid = c.get('verifiedUid');
+     const notificationId = c.req.param('notificationId');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -2164,7 +2164,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ROUTE 15: POST /api/notifications/mark-all-read (Client Protected)
+   app.post('/api/notifications/mark-all-read', requireAuth, async (c) => {
+     const callerUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -2193,7 +2193,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   app.delete('/api/notifications/:notificationId', requireAuth, async (c) => {
+     const callerUid = c.get('verifiedUid');
+     const notificationId = c.req.param('notificationId');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -2224,7 +2224,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+   // ROUTE 17: POST /api/admin/notifications (Admin Protected)
+   app.post('/api/admin/notifications', requireAdminAuth, async (c) => {
+     const adminUid = c.get('verifiedUid');
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+@@ -2281,7 +2281,7 @@ export function createWorkerApp(options?: WorkerAppOptions) {
+ 
+   // ROUTE 18: GET /api/admin/notifications/history (Admin Protected)
+   app.get('/api/admin/notifications/history', requireAdminAuth, async (c) => {
+-    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'document-portal-d2b6d';
++    const projectId = (c.env?.FIREBASE_PROJECT_ID as string) || 'parmar-consultancy';
+     const serviceAccountJson = getServiceAccountJsonFromEnv(c.env);
+ 
+     if (!serviceAccountJson) {
+diff --git a/wrangler.jsonc b/wrangler.jsonc
+index eaedcdb..10ecbe3 100644
+--- a/wrangler.jsonc
++++ b/wrangler.jsonc
+@@ -7,7 +7,7 @@
+     "nodejs_compat"
+   ],
+   "vars": {
+-    "FIREBASE_PROJECT_ID": "document-portal-d2b6d",
++    "FIREBASE_PROJECT_ID": "parmar-consultancy",
+     "NODE_ENV": "production"
+   },
+   "kv_namespaces": [

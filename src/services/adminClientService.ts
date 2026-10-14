@@ -9,7 +9,8 @@ import {
   AdminClientDocumentItem,
   AdminClientUploadFolderInfo,
   AdminClientDocumentsResponse,
-  UpdateClientStatusResponse
+  UpdateClientStatusResponse,
+  ResetClientPasswordResponse
 } from '../types/admin.types';
 import { DriveFileDetails } from '../types';
 import {
@@ -765,6 +766,87 @@ export class AdminClientService {
       status: targetStatus
     };
   }
+
+  /**
+   * Resets a client's password in Firebase Authentication.
+   *
+   * Target & Scope Rules:
+   * 1. Treat clientId as the Firebase Authentication UID.
+   * 2. Read users/{clientId} from Firestore before changing the password.
+   * 3. Return 404 (NotFoundError) if the profile does not exist.
+   * 4. Return 400 (BadRequestError) if the target profile's role is not "client" (administrators cannot be modified).
+   * 5. Follow existing account-status rules: If the client is inactive, reject with 403 (ForbiddenError).
+   *    Never silently reactivate an inactive client.
+   * 6. Strictly DO NOT modify any profile fields or client status in Firestore.
+   * 7. NEVER log the password or write it to Firestore or Google Drive.
+   */
+  public async resetClientPassword(
+    clientId: string,
+    newPassword: string,
+    ctx: {
+      projectId: string;
+      serviceAccountJson: string;
+      customFetch?: typeof fetch;
+    }
+  ): Promise<ResetClientPasswordResponse> {
+    if (!clientId || typeof clientId !== 'string' || !clientId.trim()) {
+      throw new BadRequestError('A valid client UID parameter is required.');
+    }
+
+    const cleanClientId = clientId.trim();
+
+    // Step 1: Retrieve user profile from Firestore
+    const userDoc = await firestoreRestService.getDocument('users', cleanClientId, {
+      projectId: ctx.projectId,
+      serviceAccountJson: ctx.serviceAccountJson,
+      customFetch: ctx.customFetch
+    });
+
+    if (!userDoc) {
+      logger.warn(`AdminClientService: Password reset rejected. Client profile not found for UID '${cleanClientId}'`);
+      throw new NotFoundError(`Client with UID '${cleanClientId}' not found.`);
+    }
+
+    // Step 2: Role validation - Target must be a client (reject admin or other non-client profiles)
+    if (userDoc.role !== 'client') {
+      logger.warn(
+        `AdminClientService: Password reset rejected. User '${cleanClientId}' has non-client role '${userDoc.role}'`
+      );
+      throw new BadRequestError(
+        `Target user '${cleanClientId}' is not a client. Administrator passwords cannot be reset via this endpoint.`
+      );
+    }
+
+    // Step 3: Account status check - Inactive clients cannot have passwords reset
+    const isInactive =
+      typeof userDoc.status === 'string' && userDoc.status.toLowerCase().trim() === 'inactive';
+    if (isInactive) {
+      logger.warn(
+        `AdminClientService: Password reset rejected. Client '${cleanClientId}' is inactive (status: '${userDoc.status}')`
+      );
+      throw new ForbiddenError(
+        `Client '${cleanClientId}' is inactive. Cannot reset password for an inactive client account.`
+      );
+    }
+
+    // Step 4: Perform authoritative password update in Firebase Authentication via Identity Toolkit REST
+    await firebaseAuthRestService.updateUserPassword(cleanClientId, newPassword, {
+      projectId: ctx.projectId,
+      serviceAccountJson: ctx.serviceAccountJson,
+      customFetch: ctx.customFetch
+    });
+
+    logger.info(
+      `AdminClientService: Successfully reset password for client '${cleanClientId}' in Firebase Authentication`
+    );
+
+    return {
+      success: true,
+      clientId: cleanClientId,
+      message: 'Client password reset successfully.'
+    };
+  }
 }
 
 export const adminClientService = new AdminClientService();
+

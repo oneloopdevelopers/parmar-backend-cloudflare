@@ -72,3 +72,13 @@ export interface UpdateClientStatusResponse {
   status: 'ACTIVE' | 'INACTIVE';
 }
 
+export interface ResetClientPasswordRequest {
+  newPassword: string;
+}
+
+export interface ResetClientPasswordResponse {
+  success: true;
+  clientId: string;
+  message: string;
+}
+

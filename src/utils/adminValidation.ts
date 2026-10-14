@@ -126,3 +126,49 @@ export function validateCreateClientInput(body: unknown): ValidatedClientInput {
     status
   };
 }
+
+export interface ValidatedResetPasswordInput {
+  newPassword: string;
+}
+
+/**
+ * Validates request payload for resetting a client's password.
+ * Strictly enforces string type and 6-128 character boundaries.
+ * Security: NEVER includes the submitted password in error responses or logs.
+ */
+export function validateResetPasswordInput(body: unknown): ValidatedResetPasswordInput {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new BadRequestError('Request body must be a JSON object.');
+  }
+
+  const record = body as Record<string, unknown>;
+
+  // Zero-trust check: Reject any attempt to supply identity or role fields in password reset payload
+  for (const key of Object.keys(record)) {
+    const normalized = key.toLowerCase().replace(/[-_]/g, '');
+    if (FORBIDDEN_CLIENT_CREATION_KEYS.includes(normalized)) {
+      throw new BadRequestError(
+        `Security violation: Field '${key}' cannot be specified in password reset payload. Identity and roles cannot be overridden.`
+      );
+    }
+  }
+
+  if (!('newPassword' in record) || record.newPassword === undefined || record.newPassword === null) {
+    throw new BadRequestError("Field 'newPassword' is required.");
+  }
+
+  const { newPassword } = record;
+  if (typeof newPassword !== 'string') {
+    throw new BadRequestError("Field 'newPassword' must be a string.");
+  }
+
+  if (newPassword.length < 6) {
+    throw new BadRequestError("Field 'newPassword' must have at least 6 characters.");
+  }
+
+  if (newPassword.length > 128) {
+    throw new BadRequestError("Field 'newPassword' cannot exceed 128 characters.");
+  }
+
+  return { newPassword };
+}
